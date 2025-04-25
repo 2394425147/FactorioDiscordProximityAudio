@@ -151,7 +151,7 @@ public sealed partial class Main : Form
         if (string.IsNullOrEmpty(portTextbox.Text) || !int.TryParse(portTextbox.Text, out var port) ||
             port is <= 0 or >= ushort.MaxValue               || portsInUse.Contains(port))
         {
-            AppendToLog(new LogItem("Port is left empty or unavailable. Allocating a port...", LogItem.LogType.Warning));
+            AppendToLog(new LogItem("Port is left empty or unavailable. Finding a port...", LogItem.LogType.Warning));
 
             var openPort =
                 AddressUtility.FindFirstAvailablePort(portsInUse, WebSocketHostService.StartingPort,

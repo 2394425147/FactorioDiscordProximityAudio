@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Net;
+﻿using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 
@@ -17,21 +16,14 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
     public Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
-        progress.Report(new LogItem("Raising privileges for port access...", LogItem.LogType.Info));
-
         // Execute netsh http add urlacl url=http://+:port/ user=DOMAIN\user as admin
-        var commandInfo = new ProcessStartInfo
+        if (!AddressUtility.CheckUrlReservation(port))
         {
-            FileName = "cmd",
-            Arguments = $"/k netsh http add urlacl url=http://+:{port}/ user=\"{Environment.UserDomainName}\\{Environment.UserName}\"",
-            UseShellExecute = true,
-            // CreateNoWindow = true,
-            // WindowStyle = /ProcessWindowStyle.Hidden,
-            // Verb = "runas"
-        };
+            progress.Report(new LogItem($"Reserving port {port} for websocket...", LogItem.LogType.Info));
 
-        var process = Process.Start(commandInfo);
-        process?.WaitForExit();
+            if (!AddressUtility.AddUrlReservation(port))
+                progress.Report(new LogItem("Failed to reserve port. Websocket connection may fail.", LogItem.LogType.Error));
+        }
 
         progress.Report(new LogItem($"Opening websocket...", LogItem.LogType.Info));
 
@@ -77,8 +69,8 @@ public sealed class WebSocketHostService(int port) : IReportingService
     {
         while (socket.WebSocket.State == WebSocketState.Open)
         {
-            var buffer   = new ArraySegment<byte>(new byte[4096]);
-            var received = await socket.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
+            var buffer   = new byte[4096];
+            var received = await socket.WebSocket.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
 
             if (received.MessageType == WebSocketMessageType.Close)
             {
@@ -86,12 +78,11 @@ public sealed class WebSocketHostService(int port) : IReportingService
             }
             else
             {
-                var message = Encoding.UTF8.GetString(buffer.Array, buffer.Offset, buffer.Count);
+                var message = Encoding.UTF8.GetString(buffer);
                 progress.Report(new LogItem($"Received message: {message}", LogItem.LogType.Info));
 
                 var response = Encoding.UTF8.GetBytes("Hello, " + message + "!");
-                buffer = new ArraySegment<byte>(response);
-                await socket.WebSocket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+                await socket.WebSocket.SendAsync(response, WebSocketMessageType.Text, true, CancellationToken.None);
             }
         }
     }
