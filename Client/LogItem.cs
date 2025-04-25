@@ -1,10 +1,11 @@
 ﻿namespace Client
 {
-    public sealed class LogItem(string message, LogItem.LogType type)
+    public sealed class LogItem(string message, LogItem.LogType type, string? details = null)
     {
-        public string   message = message;
-        public LogType  type    = type;
-        public DateTime time    = DateTime.Now;
+        public readonly string   message = message;
+        public readonly LogType  type    = type;
+        public          DateTime time    = DateTime.Now;
+        public readonly string?  details = details;
 
         public enum LogType
         {

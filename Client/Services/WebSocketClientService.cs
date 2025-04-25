@@ -7,6 +7,7 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
     public Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
         Started = true;
+        progress.Report(new LogItem($"Connecting to {address}:{port}...", LogItem.LogType.Info));
         return Task.CompletedTask;
     }
 

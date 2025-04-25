@@ -69,8 +69,9 @@ public sealed class WebSocketHostService(int port) : IReportingService
     {
         while (socket.WebSocket.State == WebSocketState.Open)
         {
-            var buffer   = new byte[4096];
-            var received = await socket.WebSocket.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
+            var buffer   = new Memory<byte>(new byte[4096]);
+            var received = await socket.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
+            buffer = buffer[..received.Count];
 
             if (received.MessageType == WebSocketMessageType.Close)
             {
@@ -78,7 +79,7 @@ public sealed class WebSocketHostService(int port) : IReportingService
             }
             else
             {
-                var message = Encoding.UTF8.GetString(buffer);
+                var message = Encoding.UTF8.GetString(buffer.Span);
                 progress.Report(new LogItem($"Received message: {message}", LogItem.LogType.Info));
 
                 var response = Encoding.UTF8.GetBytes("Hello, " + message + "!");

@@ -32,6 +32,7 @@ sealed partial class Main
     /// </summary>
     private void InitializeComponent()
     {
+        components = new System.ComponentModel.Container();
         ipTextbox = new TextBox();
         label1 = new Label();
         label2 = new Label();
@@ -42,6 +43,7 @@ sealed partial class Main
         isHost = new RadioButton();
         panel1 = new Panel();
         logList = new DoubleBufferedListBox();
+        toolTip1 = new ToolTip(components);
         panel1.SuspendLayout();
         SuspendLayout();
         // 
@@ -178,4 +180,5 @@ sealed partial class Main
     private RadioButton isClient;
     private Panel panel1;
     private DoubleBufferedListBox logList;
+    private ToolTip toolTip1;
 }

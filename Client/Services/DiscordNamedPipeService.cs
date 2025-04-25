@@ -1,6 +1,7 @@
 ﻿using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
+using Client.Models.DiscordPacket;
 
 namespace Client.Services;
 
@@ -26,7 +27,7 @@ public sealed class DiscordNamedPipeService : IReportingService
             var packet = CreatePacket(PacketOpCode.Close, "{}");
             await Pipe.WriteAsync(packet, cancellationToken);
 
-            var (responseOp, _) = ReceivePacket(Pipe);
+            ReceivePacket(Pipe, out var responseOp, out _);
             progress.Report(new LogItem($"Received response (OP: {responseOp})", LogItem.LogType.Info));
         }
 
@@ -50,27 +51,46 @@ public sealed class DiscordNamedPipeService : IReportingService
 
             progress.Report(new LogItem($"Connecting to {openNamedPipe}...", LogItem.LogType.Info));
 
-            var payload = new { v = 1, client_id = ApplicationClientId };
-            var json    = JsonSerializer.Serialize(payload);
-
-            var packet = CreatePacket(PacketOpCode.Handshake, json);
-
             Pipe = new NamedPipeClientStream(".", openNamedPipe, PipeDirection.InOut);
             await Pipe.ConnectAsync(3000, cancellationToken);
 
-            progress.Report(new LogItem($"Sending handshake to {openNamedPipe}...", LogItem.LogType.Info));
+            if (!await TryHandshake(progress, cancellationToken))
+                return;
 
-            await Pipe.WriteAsync(packet, cancellationToken);
-            await Pipe.FlushAsync(cancellationToken);
-
-            var (responseOp, _) = ReceivePacket(Pipe);
-
-            progress.Report(new LogItem($"Received response (OP: {responseOp})", LogItem.LogType.Info));
             Started = true;
         }
         catch (Exception ex)
         {
             progress.Report(new LogItem(ex.Message, LogItem.LogType.Error));
+        }
+    }
+
+    private async Task<bool> TryHandshake(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    {
+        try
+        {
+            progress.Report(new LogItem($"Sending handshake to Discord...", LogItem.LogType.Info));
+
+            var payload = new { v = 1, client_id = ApplicationClientId };
+            var json    = JsonSerializer.Serialize(payload);
+            var packet  = CreatePacket(PacketOpCode.Handshake, json);
+            await Pipe.WriteAsync(packet, cancellationToken);
+            await Pipe.FlushAsync(cancellationToken);
+
+            ReceivePacket(Pipe, out _, out var receivedJson);
+
+            var receivedHandshake = JsonSerializer.Deserialize<Handshake.RootObject>(receivedJson);
+
+            if (receivedHandshake == null)
+                throw new Exception("Handshake failed.");
+
+            progress.Report(new LogItem($"Connected to Discord: {receivedHandshake.data.user.username}", LogItem.LogType.Info));
+            return true;
+        }
+        catch (Exception e)
+        {
+            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+            return false;
         }
     }
 
@@ -85,7 +105,7 @@ public sealed class DiscordNamedPipeService : IReportingService
         return ms.ToArray();
     }
 
-    private static (PacketOpCode opCode, string json) ReceivePacket(NamedPipeClientStream pipe)
+    private static void ReceivePacket(NamedPipeClientStream pipe, out PacketOpCode opCode, out string json)
     {
         var header         = ReadBytes(pipe, 8);
         var responseOp     = BitConverter.ToInt32(header, 0);
@@ -94,7 +114,8 @@ public sealed class DiscordNamedPipeService : IReportingService
         var responseData = ReadBytes(pipe, responseLength);
         var responseJson = Encoding.UTF8.GetString(responseData);
 
-        return ((PacketOpCode)responseOp, responseJson);
+        opCode = (PacketOpCode)responseOp;
+        json   = responseJson;
     }
 
     private static byte[] ReadBytes(Stream stream, int count)

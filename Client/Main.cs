@@ -19,7 +19,16 @@ public sealed partial class Main : Form
     private void Main_Load(object sender, EventArgs e)
     {
         isClient.Checked     = true;
+        portTextbox.Text     = WebSocketHostService.StartingPort.ToString();
         _fileSystemLogWriter = File.CreateText("log.txt");
+
+        toolTip1.SetToolTip(ipTextbox, "IP Address of the host to connect to. Defaults to 127.0.0.1 for host mode.");
+        toolTip1.SetToolTip(
+            portTextbox, $"Port of the host to connect to. Defaults to {WebSocketHostService.StartingPort} for host mode.");
+
+        // TODO)) When rewriting this as a CLI tool, allow host-only mode for remote servers.
+        toolTip1.SetToolTip(isHost,   "Host to manage player positions. A client connection will also be made.");
+        toolTip1.SetToolTip(isClient, "Connect to a host to send and receive player positions.");
     }
 
     private string _connectButtonText = string.Empty;
@@ -42,21 +51,28 @@ public sealed partial class Main : Form
     {
         _hasConnection = true;
 
+        var port               = 0;
+        var address            = string.Empty;
+        var isDestinationValid = false;
+
         await uiThreadControl.InvokeAsync(() =>
         {
+            isDestinationValid = isHost.Checked
+                ? TryValidateHostWebSocketDestination(out address, out port)
+                : TryValidateClientWebSocketDestination(out address, out port);
+
+            if (!isDestinationValid)
+                return;
+
+            ipTextbox.Text   = address;
+            portTextbox.Text = port.ToString();
+
             ClearInMemoryLog();
             connectButton.Text    = "Connecting...";
             connectButton.Enabled = false;
         });
 
-        var port    = 0;
-        var address = string.Empty;
-        if (isHost.Checked)
-            await uiThreadControl.InvokeAsync(() => { port = TryValidateHostPort(); });
-        else
-            await uiThreadControl.InvokeAsync(() => { TryValidateClientAddressAndPort(out address, out port); });
-
-        if (port == 0)
+        if (!isDestinationValid)
         {
             await CancelConnection();
             return;
@@ -86,16 +102,14 @@ public sealed partial class Main : Form
                 return;
             }
         }
-        else
+
+        var clientService = new WebSocketClientService(address, port);
+        Program.RegisterService(clientService);
+        await clientService.StartClient(logger, Program.applicationExitCancellationToken?.Token ?? CancellationToken.None);
+        if (!clientService.Started)
         {
-            var clientService = new WebSocketClientService(address, port);
-            Program.RegisterService(clientService);
-            await clientService.StartClient(logger, Program.applicationExitCancellationToken?.Token ?? CancellationToken.None);
-            if (!clientService.Started)
-            {
-                await CancelConnection();
-                return;
-            }
+            await CancelConnection();
+            return;
         }
 
         await uiThreadControl.InvokeAsync(() =>
@@ -117,39 +131,16 @@ public sealed partial class Main : Form
         }
     }
 
-    private void TryValidateClientAddressAndPort(out string address, out int port)
+    private bool TryValidateHostWebSocketDestination(out string address, out int port)
     {
         port    = 0;
-        address = string.Empty;
+        address = "127.0.0.1";
 
-        if (string.IsNullOrEmpty(ipTextbox.Text))
-        {
-            AppendToLog(new LogItem("IP Address cannot be null.", LogItem.LogType.Error));
-            return;
-        }
-
-        if (string.IsNullOrEmpty(portTextbox.Text))
-        {
-            AppendToLog(new LogItem("Port cannot be null.", LogItem.LogType.Error));
-            return;
-        }
-
-        if (!ushort.TryParse(portTextbox.Text, out var uShortPort) || port is <= 0 or >= 10000)
-        {
-            port = uShortPort;
-            AppendToLog(new LogItem("Port is invalid.", LogItem.LogType.Error));
-            return;
-        }
-
-        address = ipTextbox.Text;
-    }
-
-    private int TryValidateHostPort()
-    {
         var portsInUse = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Select(x => x.Port).ToHashSet();
 
-        if (string.IsNullOrEmpty(portTextbox.Text) || !int.TryParse(portTextbox.Text, out var port) ||
-            port is <= 0 or >= ushort.MaxValue               || portsInUse.Contains(port))
+        if (!int.TryParse(portTextbox.Text, out port) ||
+            port is <= 0 or >= ushort.MaxValue        ||
+            portsInUse.Contains(port))
         {
             AppendToLog(new LogItem("Port is left empty or unavailable. Finding a port...", LogItem.LogType.Warning));
 
@@ -159,15 +150,41 @@ public sealed partial class Main : Form
             if (openPort == 0)
             {
                 AppendToLog(new LogItem("Port is occupied.", LogItem.LogType.Error));
-                return 0;
+                return false;
             }
 
             port = openPort;
-
-            portTextbox.Text = port.ToString();
         }
 
-        return port;
+        return true;
+    }
+
+    private bool TryValidateClientWebSocketDestination(out string address, out int port)
+    {
+        port    = 0;
+        address = string.Empty;
+
+        if (string.IsNullOrEmpty(ipTextbox.Text))
+        {
+            AppendToLog(new LogItem("IP Address cannot be null.", LogItem.LogType.Error));
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(portTextbox.Text))
+        {
+            AppendToLog(new LogItem("Port cannot be null.", LogItem.LogType.Error));
+            return false;
+        }
+
+        if (!ushort.TryParse(portTextbox.Text, out var uShortPort) || port is <= 0 or >= 10000)
+        {
+            port = uShortPort;
+            AppendToLog(new LogItem("Port is invalid.", LogItem.LogType.Error));
+            return false;
+        }
+
+        address = ipTextbox.Text;
+        return true;
     }
 
     private void DisconnectServices()
@@ -218,6 +235,9 @@ public sealed partial class Main : Form
         var isAtBottom       = logList.Items.Count - logList.TopIndex <= visibleLineCount + 1;
         logList.Items.Add(logItem);
         _fileSystemLogWriter?.WriteLine($"[{logItem.time}] [{logItem.type}] {logItem.message}");
+
+        if (logItem.details != null)
+            _fileSystemLogWriter?.WriteLine(logItem.details);
 
         if (isAtBottom)
             logList.TopIndex = logList.Items.Count - 1;
