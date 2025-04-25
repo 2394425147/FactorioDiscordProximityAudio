@@ -176,9 +176,8 @@ public sealed partial class Main : Form
             return false;
         }
 
-        if (!ushort.TryParse(portTextbox.Text, out var uShortPort) || port is <= 0 or >= 10000)
+        if (!int.TryParse(portTextbox.Text, out port) || port is <= 0 or >= ushort.MaxValue)
         {
-            port = uShortPort;
             AppendToLog(new LogItem("Port is invalid.", LogItem.LogType.Error));
             return false;
         }

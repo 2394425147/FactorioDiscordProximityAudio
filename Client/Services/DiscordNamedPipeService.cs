@@ -61,7 +61,7 @@ public sealed class DiscordNamedPipeService : IReportingService
         }
         catch (Exception ex)
         {
-            progress.Report(new LogItem(ex.Message, LogItem.LogType.Error));
+            progress.Report(new LogItem(ex.Message, LogItem.LogType.Error, ex.ToString()));
         }
     }
 
