@@ -16,10 +16,14 @@ public sealed class PlayerTrackerService : IReportingService
     {
         Progress = progress;
 
-        Main.uiThreadControl.Invoke(() => BindableClientPositions.DataSource = Clients);
-
         DiscordNamedPipeService = Program.GetService<DiscordNamedPipeService>();
         WebSocketClientService  = Program.GetService<WebSocketClientService>();
+
+        Main.uiThreadControl.Invoke(() =>
+        {
+            BindableClientPositions.DataSource = Clients;
+            BindableClientPositions.ResetBindings(false);
+        });
 
         if (WebSocketClientService != null)
         {
@@ -33,7 +37,6 @@ public sealed class PlayerTrackerService : IReportingService
 
     private void OnClientUpdateReceived(string discordId, FactorioPosition position)
     {
-        BindableClientPositions.SuspendBinding();
         var index = Clients.FindIndex(c => c.DiscordId == discordId);
         if (index == -1)
         {
@@ -45,7 +48,6 @@ public sealed class PlayerTrackerService : IReportingService
                 SurfaceIndex = position.surfaceIndex,
             });
 
-            index = Clients.Count - 1;
             Progress?.Report(new LogItem($"Client {discordId} has joined the game.", LogItem.LogType.Info));
         }
         else
@@ -57,32 +59,30 @@ public sealed class PlayerTrackerService : IReportingService
             Progress?.Report(new LogItem($"Client {discordId} has moved.", LogItem.LogType.Info));
         }
 
-        BindableClientPositions.ResetItem(index);
-        BindableClientPositions.ResumeBinding();
+        Main.uiThreadControl.Invoke(() => BindableClientPositions.ResetBindings(false));
     }
 
     private void OnClientDisconnected(string discordId)
     {
-        BindableClientPositions.SuspendBinding();
         var index = Clients.FindIndex(c => c.DiscordId == discordId);
-        if (index != -1)
-        {
-            BindableClientPositions.RemoveAt(index);
-            // Clients.RemoveAt(index);
-        }
-        BindableClientPositions.ResumeBinding();
+
+        if (index == -1)
+            return;
+
+        Clients.RemoveAt(index);
+        Progress?.Report(new LogItem($"Client {discordId} disconnected.", LogItem.LogType.Info));
+        Main.uiThreadControl.Invoke(() => BindableClientPositions.ResetBindings(false));
     }
 
     public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken = default)
     {
-        Started = false;
-
         if (WebSocketClientService != null)
         {
             WebSocketClientService.AnyClientUpdateReceived -= OnClientUpdateReceived;
             WebSocketClientService.AnyClientDisconnected   -= OnClientDisconnected;
         }
 
+        Started = false;
         return Task.CompletedTask;
     }
 }

@@ -1,6 +1,8 @@
-﻿using System.Net;
-using System.Net.WebSockets;
-using System.Text;
+﻿using System.Text;
+using PHS.Networking.Enums;
+using WebsocketsSimple.Server;
+using WebsocketsSimple.Server.Events.Args;
+using WebsocketsSimple.Server.Models;
 
 namespace Client.Services;
 
@@ -11,13 +13,14 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
     public bool Started { get; private set; }
 
-    private HttpListener?         HttpListener         { get; set; }
-    private PlayerTrackerService? PlayerTrackerService { get; set; }
+    private WebsocketServer?                         WebsocketServer      { get; set; }
+    private PlayerTrackerService?                    PlayerTrackerService { get; set; }
+    private IProgress<LogItem>?                      Progress             { get; set; }
+    private Dictionary<string, ClientConnectionInfo> Clients              { get; } = [];
 
-    private HashSet<HttpListenerWebSocketContext> Clients { get; } = [];
-
-    public Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
+        Progress = progress;
         // Execute netsh http add urlacl url=http://+:port/ user=DOMAIN\user as admin
         if (!AddressUtility.CheckUrlReservation(port))
         {
@@ -29,104 +32,62 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
         progress.Report(new LogItem($"Opening websocket...", LogItem.LogType.Info));
 
-        HttpListener = new HttpListener();
-        HttpListener.Prefixes.Add($"http://+:{port}/");
-        HttpListener.Start();
+        WebsocketServer                 =  new WebsocketServer(new ParamsWSServer(port));
+        WebsocketServer.MessageEvent    += OnMessageSentOrReceived;
+        WebsocketServer.ConnectionEvent += OnClientConnectionChanged;
+        await WebsocketServer.StartAsync(cancellationToken);
 
-        ListenerMainLoop(progress, cancellationToken).ConfigureAwait(false);
-
-        Started = true;
         progress.Report(new LogItem($"Listening for websocket connections at *:{port}...", LogItem.LogType.Info));
-        return Task.CompletedTask;
+        Started = true;
     }
 
-    private async Task ListenerMainLoop(IProgress<LogItem> progress, CancellationToken cancellationToken = default)
+    private void OnMessageSentOrReceived(object sender, WSMessageServerEventArgs args)
     {
-        while (HttpListener?.IsListening ?? false)
+        if (args.MessageEventType != MessageEventType.Receive)
+            return;
+
+        var buffer = new Memory<byte>(args.Bytes);
+        var opCode = (WebSocketClientService.OpCode)buffer.Span[0];
+        buffer = buffer[1..];
+
+        switch (opCode)
         {
-            if (cancellationToken.IsCancellationRequested)
+            case WebSocketClientService.OpCode.Identify:
+            {
+                var discordId = Encoding.ASCII.GetString(buffer.Span);
+                Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo
+                {
+                    discordId = discordId,
+                    socketId  = args.Connection.ConnectionId
+                });
+                Task.Run(() => InitializePlayers(args));
+                break;
+            }
+            case WebSocketClientService.OpCode.Update:
+            {
+                if (!Clients.TryGetValue(args.Connection.ConnectionId, out var value))
+                    return;
+
+                Task.Run(() => BroadcastPositionPacket(buffer, value.discordId));
+                break;
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(opCode), opCode, null);
+        }
+    }
+
+    private void OnClientConnectionChanged(object sender, WSConnectionServerEventArgs args)
+    {
+        if (args.ConnectionEventType == ConnectionEventType.Disconnect)
+        {
+            if (!Clients.Remove(args.Connection.ConnectionId, out var info))
                 return;
 
-            var context = await HttpListener.GetContextAsync();
-
-            context.Response.AppendHeader("Access-Control-Allow-Origin", "*");
-
-            if (context.Request.IsWebSocketRequest)
-            {
-                var socket = await context.AcceptWebSocketAsync(subProtocol: null);
-                Clients.Add(socket);
-                _ = Task.Run(() => HandleSocketAsync(progress, socket), cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                context.Response.StatusCode = 400;
-                context.Response.Close();
-            }
-
-            await Task.Yield();
+            Task.Run(() => BroadcastDisconnectPacket(info.discordId));
         }
     }
 
-    private async Task HandleSocketAsync(IProgress<LogItem> progress, HttpListenerWebSocketContext socket)
-    {
-        try
-        {
-            var discordId = string.Empty;
-            while (socket.WebSocket.State == WebSocketState.Open)
-            {
-                var buffer = new Memory<byte>(new byte[4096]);
-
-                var received = await socket.WebSocket.ReceiveAsync(
-                    buffer,
-                    CancellationToken.None
-                );
-
-                switch (received.MessageType)
-                {
-                    case WebSocketMessageType.Text:
-                    {
-                        buffer = buffer[..received.Count];
-                        if (buffer.Length == 0)
-                            break;
-
-                        discordId = DiscordUtility.GetFixedLengthUid(Encoding.ASCII.GetString(buffer.Span));
-                        await InitializePlayers(socket);
-                        break;
-                    }
-                    case WebSocketMessageType.Binary:
-                    {
-                        buffer = buffer[..received.Count];
-                        if (buffer.Length == 0)
-                            break;
-
-                        await BroadcastPositionPacket(buffer, discordId);
-                        break;
-                    }
-                    case WebSocketMessageType.Close:
-                    {
-                        await socket.WebSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closed by client.",
-                                                          CancellationToken.None);
-                        Clients.Remove(socket);
-
-                        await BroadcastDisconnectPacket(discordId);
-                        break;
-                    }
-                    default:
-                        throw new ArgumentOutOfRangeException();
-                }
-
-                await Task.Yield();
-            }
-        }
-        catch (Exception e)
-        {
-            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
-        }
-
-        socket.WebSocket.Dispose();
-    }
-
-    private async Task InitializePlayers(HttpListenerWebSocketContext socket)
+    private async Task InitializePlayers(WSMessageServerEventArgs args)
     {
         PlayerTrackerService ??= Program.GetService<PlayerTrackerService>();
 
@@ -147,12 +108,12 @@ public sealed class WebSocketHostService(int port) : IReportingService
             }
         }
 
-        await socket.WebSocket.SendAsync(ms.ToArray(), WebSocketMessageType.Binary, true, CancellationToken.None);
+        await WebsocketServer!.SendToConnectionAsync(ms.ToArray(), args.Connection);
     }
 
     public async Task BroadcastPositionPacket(Memory<byte> data, string discordId)
     {
-        if (HttpListener == null)
+        if (WebsocketServer == null)
             return;
 
         using var ms = new MemoryStream();
@@ -164,15 +125,12 @@ public sealed class WebSocketHostService(int port) : IReportingService
         }
 
         var memory = ms.ToArray();
-        var tasks  = new List<Task>();
-        foreach (var client in Clients)
-            tasks.Add(client.WebSocket.SendAsync(memory, WebSocketMessageType.Binary, true, CancellationToken.None));
-        await Task.WhenAll(tasks);
+        await WebsocketServer.BroadcastToAllConnectionsAsync(memory);
     }
 
     private async Task BroadcastDisconnectPacket(string discordId)
     {
-        if (HttpListener == null)
+        if (WebsocketServer == null)
             return;
 
         using var ms = new MemoryStream();
@@ -183,27 +141,28 @@ public sealed class WebSocketHostService(int port) : IReportingService
         }
 
         var memory = ms.ToArray();
-        var tasks  = new List<Task>();
-        foreach (var client in Clients)
-            tasks.Add(client.WebSocket.SendAsync(memory, WebSocketMessageType.Binary, true, CancellationToken.None));
-        await Task.WhenAll(tasks);
+        await WebsocketServer.BroadcastToAllConnectionsAsync(memory);
     }
 
-    public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
         try
         {
             Clients.Clear();
-            HttpListener?.Close();
-            HttpListener?.Stop();
+            await WebsocketServer!.StopAsync(cancellationToken);
+            WebsocketServer.Dispose();
             Started = false;
         }
         catch (Exception e)
         {
             progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
         }
+    }
 
-        return Task.CompletedTask;
+    public sealed class ClientConnectionInfo
+    {
+        public string discordId = string.Empty;
+        public string socketId  = string.Empty;
     }
 
     public enum OpCode : byte

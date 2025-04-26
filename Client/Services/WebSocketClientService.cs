@@ -1,6 +1,10 @@
 ﻿using System.Net.WebSockets;
 using System.Text;
 using Client.Models;
+using PHS.Networking.Enums;
+using WebsocketsSimple.Client;
+using WebsocketsSimple.Client.Events.Args;
+using WebsocketsSimple.Client.Models;
 
 namespace Client.Services;
 
@@ -10,7 +14,7 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
     private IProgress<LogItem>?         Progress            { get; set; }
     private FactorioFileWatcherService? FactorioFileWatcher { get; set; }
     private DiscordNamedPipeService?    DiscordNamedPipe    { get; set; }
-    private ClientWebSocket?            WebSocket           { get; set; }
+    private WebsocketClient?            WebSocket           { get; set; }
 
     public event OnAnyClientUpdateReceived? AnyClientUpdateReceived;
     public event OnAnyClientDisconnected?   AnyClientDisconnected;
@@ -35,18 +39,14 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
         try
         {
             progress.Report(new LogItem($"Connecting to {address}:{port}...", LogItem.LogType.Info));
-            WebSocket = new ClientWebSocket();
-            await WebSocket.ConnectAsync(new Uri($"ws://{address}:{port}"), cancellationToken);
 
-            if (DiscordNamedPipe.HandshakePacket != null)
-                await WebSocket.SendAsync(
-                    Encoding.ASCII.GetBytes(DiscordNamedPipe.HandshakePacket.data.user.id),
-                    WebSocketMessageType.Text, true, CancellationToken.None);
+            WebSocket                 =  new WebsocketClient(new ParamsWSClient(address, port, false));
+            WebSocket.ConnectionEvent += OnConnectionChanged;
+            WebSocket.MessageEvent    += OnMessageSentOrReceived;
+            await WebSocket.ConnectAsync(cancellationToken);
 
             FactorioFileWatcher.OnPositionUpdated += OnLocalPositionUpdated;
             progress.Report(new LogItem($"Connected to {address}:{port}.", LogItem.LogType.Info));
-
-            _ = ListenerMainLoop(progress, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception e)
         {
@@ -57,84 +57,89 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
         Started = true;
     }
 
-    private async Task ListenerMainLoop(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    private void OnConnectionChanged(object sender, WSConnectionClientEventArgs args)
     {
-        while (WebSocket?.State == WebSocketState.Open)
+        if (args.ConnectionEventType == ConnectionEventType.Connected)
         {
-            if (cancellationToken.IsCancellationRequested)
-                return;
+            if (DiscordNamedPipe?.HandshakePacket != null)
+                Task.Run(() => SendIdentificationPacket(DiscordNamedPipe.HandshakePacket.data.user.id));
+        }
+    }
 
-            var buffer   = new Memory<byte>(new byte[4096]);
-            var received = await WebSocket.ReceiveAsync(buffer, cancellationToken);
+    private void OnMessageSentOrReceived(object sender, WSMessageClientEventArgs args)
+    {
+        if (args.MessageEventType != MessageEventType.Receive)
+            return;
 
-            if (received.MessageType == WebSocketMessageType.Close)
+        var buffer = new Memory<byte>(args.Bytes);
+        var opCode = (WebSocketHostService.OpCode)buffer.Span[0];
+        buffer = buffer[1..];
+
+        switch (opCode)
+        {
+            case WebSocketHostService.OpCode.InitPlayers:
             {
-                // await WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", cancellationToken);
-                break;
-            }
-
-            buffer = buffer[..received.Count];
-
-            if (buffer.Length == 0)
-                continue;
-
-            var opCode = (WebSocketHostService.OpCode)buffer.Span[0];
-            buffer = buffer[1..];
-
-            switch (opCode)
-            {
-                case WebSocketHostService.OpCode.InitPlayers:
+                while (buffer.Length > 0)
                 {
-                    while (buffer.Length > 0)
-                    {
-                        var discordId =
-                            DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer.Span[..DiscordUtility.MaxUidLength]));
+                    var discordId =
+                        DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer.Span[..DiscordUtility.MaxUidLength]));
 
-                        buffer = buffer[DiscordUtility.MaxUidLength..];
+                    buffer = buffer[DiscordUtility.MaxUidLength..];
 
-                        var x       = BitConverter.ToDouble(buffer[..8].Span);
-                        var y       = BitConverter.ToDouble(buffer[8..16].Span);
-                        var surface = BitConverter.ToInt32(buffer[16..20].Span);
+                    var x       = BitConverter.ToDouble(buffer[..8].Span);
+                    var y       = BitConverter.ToDouble(buffer[8..16].Span);
+                    var surface = BitConverter.ToInt32(buffer[16..20].Span);
 
-                        AnyClientUpdateReceived?.Invoke(discordId, new FactorioPosition
-                        {
-                            surfaceIndex = surface,
-                            x            = x,
-                            y            = y
-                        });
-
-                        buffer = buffer[20..];
-                    }
-
-                    if (FactorioFileWatcher?.LastPositionPacket != null)
-                        await SendPositionPacket(FactorioFileWatcher.LastPositionPacket.Value);
-                    continue;
-                }
-                case WebSocketHostService.OpCode.Position:
-                {
-                    var x         = BitConverter.ToDouble(buffer[..8].Span);
-                    var y         = BitConverter.ToDouble(buffer[8..16].Span);
-                    var surface   = BitConverter.ToInt32(buffer[16..20].Span);
-                    var discordId = Encoding.ASCII.GetString(buffer[20..].Span);
-
-                    AnyClientUpdateReceived?.Invoke(DiscordUtility.GetUid(discordId), new FactorioPosition
+                    AnyClientUpdateReceived?.Invoke(discordId, new FactorioPosition
                     {
                         surfaceIndex = surface,
                         x            = x,
                         y            = y
                     });
-                    continue;
+
+                    buffer = buffer[20..];
                 }
-                case WebSocketHostService.OpCode.Disconnect:
-                {
-                    var discordId = Encoding.ASCII.GetString(buffer.Span);
-                    AnyClientDisconnected?.Invoke(DiscordUtility.GetUid(discordId));
-                    continue;
-                }
-                default:
-                    throw new ArgumentOutOfRangeException();
+
+                if (FactorioFileWatcher?.LastPositionPacket != null)
+                    Task.Run(() => SendPositionPacket(FactorioFileWatcher.LastPositionPacket.Value));
+                break;
             }
+            case WebSocketHostService.OpCode.Position:
+            {
+                var x         = BitConverter.ToDouble(buffer[..8].Span);
+                var y         = BitConverter.ToDouble(buffer[8..16].Span);
+                var surface   = BitConverter.ToInt32(buffer[16..20].Span);
+                var discordId = Encoding.ASCII.GetString(buffer[20..].Span);
+
+                AnyClientUpdateReceived?.Invoke(DiscordUtility.GetUid(discordId), new FactorioPosition
+                {
+                    surfaceIndex = surface,
+                    x            = x,
+                    y            = y
+                });
+                break;
+            }
+            case WebSocketHostService.OpCode.Disconnect:
+            {
+                var discordId = Encoding.ASCII.GetString(buffer.Span);
+                AnyClientDisconnected?.Invoke(DiscordUtility.GetUid(discordId));
+                break;
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(opCode), opCode, null);
         }
+    }
+
+    private async Task SendIdentificationPacket(string discordId)
+    {
+        using var ms = new MemoryStream();
+        await using (var binaryWriter = new BinaryWriter(ms))
+        {
+            binaryWriter.Write((byte)OpCode.Identify);
+            binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
+        }
+
+        await WebSocket!.SendAsync(ms.ToArray());
     }
 
     private async void OnLocalPositionUpdated(FactorioPosition obj)
@@ -151,18 +156,19 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
 
     private async Task SendPositionPacket(FactorioPosition obj)
     {
-        if (DiscordNamedPipe?.HandshakePacket == null || WebSocket?.State != WebSocketState.Open)
+        if (DiscordNamedPipe?.HandshakePacket == null || WebSocket == null)
             return;
 
         using var ms = new MemoryStream();
         await using (var binaryWriter = new BinaryWriter(ms))
         {
+            binaryWriter.Write((byte)OpCode.Update);
             binaryWriter.Write(obj.x);
             binaryWriter.Write(obj.y);
             binaryWriter.Write(obj.surfaceIndex);
         }
 
-        await WebSocket.SendAsync(ms.ToArray(), WebSocketMessageType.Binary, true, CancellationToken.None);
+        await WebSocket.SendAsync(ms.ToArray());
     }
 
     public async Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
@@ -172,8 +178,8 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
 
         try
         {
-            if (WebSocket?.State == WebSocketState.Open)
-                await WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing.", CancellationToken.None);
+            if (WebSocket != null)
+                await WebSocket.DisconnectAsync(cancellationToken: cancellationToken);
             WebSocket?.Dispose();
             Started = false;
         }
@@ -181,5 +187,11 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
         {
             progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
         }
+    }
+
+    public enum OpCode : byte
+    {
+        Identify,
+        Update
     }
 }
