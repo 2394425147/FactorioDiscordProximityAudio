@@ -12,27 +12,12 @@ public sealed class DiscordNamedPipeService : IReportingService
 
     private NamedPipeClientStream Pipe { get; set; } = null!;
 
+    public Handshake.RootObject? HandshakePacket { get; set; }
+
     public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
         Started = false;
         await SendHandshake(progress, cancellationToken);
-    }
-
-    public async Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
-    {
-        if (Pipe.IsConnected)
-        {
-            progress.Report(new LogItem("Closing connection to Discord...", LogItem.LogType.Info));
-
-            var packet = CreatePacket(PacketOpCode.Close, "{}");
-            await Pipe.WriteAsync(packet, cancellationToken);
-
-            ReceivePacket(Pipe, out var responseOp, out _);
-            progress.Report(new LogItem($"Received response (OP: {responseOp})", LogItem.LogType.Info));
-        }
-
-        Started = false;
-        await Pipe.DisposeAsync();
     }
 
     public async Task SendHandshake(IProgress<LogItem> progress, CancellationToken cancellationToken)
@@ -81,10 +66,12 @@ public sealed class DiscordNamedPipeService : IReportingService
 
             var receivedHandshake = JsonSerializer.Deserialize<Handshake.RootObject>(receivedJson);
 
-            if (receivedHandshake == null)
-                throw new Exception("Handshake failed.");
+            HandshakePacket = receivedHandshake ?? throw new Exception("Handshake failed.");
 
-            progress.Report(new LogItem($"Connected to Discord: {receivedHandshake.data.user.username}", LogItem.LogType.Info));
+            progress.Report(
+                new LogItem(
+                    $"Connected to Discord as {receivedHandshake.data.user.username} ({receivedHandshake.data.user.id})",
+                    LogItem.LogType.Info));
             return true;
         }
         catch (Exception e)
@@ -131,6 +118,26 @@ public sealed class DiscordNamedPipeService : IReportingService
         }
 
         return buffer;
+    }
+
+    public async Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    {
+        if (Pipe.IsConnected)
+        {
+            progress.Report(new LogItem("Closing connection to Discord...", LogItem.LogType.Info));
+
+            var packet = CreatePacket(PacketOpCode.Close, "{}");
+            await Pipe.WriteAsync(packet, cancellationToken);
+
+            ReceivePacket(Pipe, out var responseOp, out var message);
+
+            progress.Report(responseOp != PacketOpCode.Close
+                                ? new LogItem($"Unexpected response (OP: {responseOp})", LogItem.LogType.Error, message)
+                                : new LogItem($"Discord connection closed.",             LogItem.LogType.Info));
+        }
+
+        Started = false;
+        await Pipe.DisposeAsync();
     }
 
     public enum PacketOpCode

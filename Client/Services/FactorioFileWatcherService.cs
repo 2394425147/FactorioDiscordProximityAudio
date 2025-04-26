@@ -1,8 +1,13 @@
-﻿namespace Client.Services;
+﻿using Client.Models;
+
+namespace Client.Services;
 
 public sealed class FactorioFileWatcherService : IReportingService
 {
-    public  bool                Started              { get; private set; }
+    public bool                    Started { get; private set; }
+    public event Action<FactorioPosition>? OnPositionUpdated;
+    public FactorioPosition?               LastPositionPacket { get; private set; }
+
     private string?             TargetFolderFullPath { get; set; }
     private string?             TargetFileFullPath   { get; set; }
     private IProgress<LogItem>? Progress             { get; set; }
@@ -50,16 +55,13 @@ public sealed class FactorioFileWatcherService : IReportingService
 
     private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
     {
-        FileSystemWatcher!.EnableRaisingEvents = false;
-
         if (e.ChangeType != WatcherChangeTypes.Changed)
-        {
-            FileSystemWatcher!.EnableRaisingEvents = true;
             return;
-        }
 
         if (TargetFileFullPath == null || !File.Exists(TargetFileFullPath))
             return;
+
+        FileSystemWatcher!.EnableRaisingEvents = false;
 
         using var reader = new StreamReader(TargetFileFullPath, new FileStreamOptions
         {
@@ -68,16 +70,34 @@ public sealed class FactorioFileWatcherService : IReportingService
             Share  = FileShare.ReadWrite
         });
 
-        var x            = float.Parse(reader.ReadLine() ?? string.Empty);
-        var y            = float.Parse(reader.ReadLine() ?? string.Empty);
-        var index        = int.Parse(reader.ReadLine()   ?? string.Empty);
-        var surfaceIndex = int.Parse(reader.ReadLine()   ?? string.Empty);
-        var playerName   = reader.ReadLine();
+        try
+        {
+            using var file         = File.Open(TargetFileFullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var binaryReader = new BinaryReader(file);
 
-        Progress?.Report(new LogItem($"{playerName}: ({x:F2}, {y:F2}) on surface {surfaceIndex}",
-                                     LogItem.LogType.Info));
+            if (file.Length != 24)
+                return;
 
-        FileSystemWatcher!.EnableRaisingEvents = true;
+            var x            = binaryReader.ReadDouble();
+            var y            = binaryReader.ReadDouble();
+            var surfaceIndex = binaryReader.ReadInt32();
+
+            var packet = new FactorioPosition { x = x, y = y, surfaceIndex = surfaceIndex };
+
+            if (LastPositionPacket?.Equals(packet) ?? false)
+                return;
+
+            LastPositionPacket = packet;
+            OnPositionUpdated?.Invoke(packet);
+        }
+        catch (Exception ex)
+        {
+            Progress?.Report(new LogItem(ex.Message, LogItem.LogType.Error, ex.ToString()));
+        }
+        finally
+        {
+            FileSystemWatcher!.EnableRaisingEvents = true;
+        }
     }
 
     public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)

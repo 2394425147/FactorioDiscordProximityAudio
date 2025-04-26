@@ -18,9 +18,18 @@ public sealed partial class Main : Form
 
     private void Main_Load(object sender, EventArgs e)
     {
-        isClient.Checked     = true;
-        portTextbox.Text     = WebSocketHostService.StartingPort.ToString();
-        _fileSystemLogWriter = File.CreateText("log.txt");
+        isClient.Checked = true;
+        portTextbox.Text = WebSocketHostService.StartingPort.ToString();
+
+        try
+        {
+            _fileSystemLogWriter = File.CreateText("log.txt");
+        }
+        catch (Exception ex)
+        {
+            AppendToLog(new LogItem($"Failed to connect to log file. Logging will be disabled.", LogItem.LogType.Error,
+                                    ex.ToString()));
+        }
 
         toolTip1.SetToolTip(ipTextbox, "IP Address of the host to connect to. Defaults to 127.0.0.1 for host mode.");
         toolTip1.SetToolTip(
@@ -40,7 +49,7 @@ public sealed partial class Main : Form
         _hasConnection = !_hasConnection;
 
         if (hadConnection)
-            DisconnectServices();
+            Task.Run(DisconnectServices);
         else
             Task.Run(ConnectServices);
 
@@ -79,13 +88,13 @@ public sealed partial class Main : Form
         }
 
         var logger = new Progress<LogItem>(logItem => uiThreadControl.Invoke(() => AppendToLog(logItem)));
-        var tasks = Program.clients.Values.Select(c => c.StartClient(logger,
-                                                                     Program.applicationExitCancellationToken?.Token ??
-                                                                     CancellationToken.None)).ToList();
+        var tasks = Program.Services.Select(c => c.StartClient(logger,
+                                                               Program.applicationExitCancellationToken?.Token ??
+                                                               CancellationToken.None)).ToList();
 
         await Task.WhenAll(tasks);
 
-        if (!Program.clients.Values.All(c => c.Started))
+        if (!Program.Services.All(c => c.Started))
         {
             await CancelConnection();
             return;
@@ -112,11 +121,23 @@ public sealed partial class Main : Form
             return;
         }
 
+        var playerTrackerService = new PlayerTrackerService();
+        Program.RegisterService(playerTrackerService);
+        await playerTrackerService.StartClient(
+            logger, Program.applicationExitCancellationToken?.Token ?? CancellationToken.None);
+        if (!playerTrackerService.Started)
+        {
+            await CancelConnection();
+            return;
+        }
+
         await uiThreadControl.InvokeAsync(() =>
         {
-            connectButton.Text    = "Disconnect";
-            connectButton.Enabled = true;
+            connectButton.Text        = "Disconnect";
+            connectButton.Enabled     = true;
+            playerDataGrid.DataSource = Program.GetService<PlayerTrackerService>()?.BindableClientPositions;
         });
+
         return;
 
         async Task CancelConnection()
@@ -186,20 +207,31 @@ public sealed partial class Main : Form
         return true;
     }
 
-    private void DisconnectServices()
+    private async Task DisconnectServices()
     {
-        connectButton.Text = "Disconnecting...";
+        await uiThreadControl.InvokeAsync(() => { connectButton.Text = "Disconnecting..."; });
 
-        var logger = new Progress<LogItem>(AppendToLog);
-        var tasks  = Program.clients.Values.Select(c => c.StopClient(logger, CancellationToken.None));
-        Task.WhenAll(tasks);
+        var logger = new Progress<LogItem>(logItem => uiThreadControl.Invoke(() => AppendToLog(logItem)));
+        var tasks  = new List<Task>(Program.Services.Count);
+        for (var i = Program.Services.Count - 1; i >= 0; i--)
+        {
+            var service = Program.Services[i];
+            tasks.Add(service.StopClient(logger, Program.applicationExitCancellationToken?.Token ?? CancellationToken.None));
+        }
+
+        await Task.WhenAll(tasks);
 
         Program.UnregisterService<WebSocketClientService>();
         Program.UnregisterService<WebSocketHostService>();
+        Program.UnregisterService<PlayerTrackerService>();
 
-        connectButton.Text    = _connectButtonText;
-        _hasConnection        = false;
-        connectButton.Enabled = true;
+        await uiThreadControl.InvokeAsync(() =>
+        {
+            connectButton.Text        = _connectButtonText;
+            _hasConnection            = false;
+            connectButton.Enabled     = true;
+            playerDataGrid.DataSource = null;
+        });
     }
 
     private void isClient_CheckedChanged(object sender, EventArgs e)
@@ -237,6 +269,8 @@ public sealed partial class Main : Form
 
         if (logItem.details != null)
             _fileSystemLogWriter?.WriteLine(logItem.details);
+
+        _fileSystemLogWriter?.Flush();
 
         if (isAtBottom)
             logList.TopIndex = logList.Items.Count - 1;

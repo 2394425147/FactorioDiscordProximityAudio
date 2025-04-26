@@ -4,8 +4,8 @@ namespace Client;
 
 internal static class Program
 {
-    public static Dictionary<Type, IReportingService> clients = new();
-    public static CancellationTokenSource?            applicationExitCancellationToken;
+    public static readonly List<IReportingService>  Services = [];
+    public static          CancellationTokenSource? applicationExitCancellationToken;
 
     /// <summary>
     ///  The main entry point for the application.
@@ -22,17 +22,22 @@ internal static class Program
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new Main());
+
         Application.ApplicationExit += Application_ApplicationExit;
+        Application.Run(new Main());
     }
 
-    private static async void Application_ApplicationExit(object? sender, EventArgs e)
+    private static void Application_ApplicationExit(object? sender, EventArgs e)
     {
         try
         {
             var emptyProgress = new Progress<LogItem>();
-            await Task.WhenAll(clients.Values.Select(c => c.StopClient(emptyProgress, CancellationToken.None)));
-            await (applicationExitCancellationToken?.CancelAsync() ?? Task.CompletedTask);
+            for (var i = Services.Count - 1; i >= 0; i--)
+            {
+                var reportingService = Services[i];
+                reportingService.StopClient(emptyProgress, CancellationToken.None).GetAwaiter().GetResult();
+            }
+            applicationExitCancellationToken?.Cancel();
         }
         catch (Exception)
         {
@@ -41,10 +46,13 @@ internal static class Program
     }
 
     public static void RegisterService<T>(T service) where T : IReportingService =>
-        clients[typeof(T)] = service;
+        Services.Add(service);
 
     public static void UnregisterService<T>() where T : IReportingService
     {
-        clients.Remove(typeof(T), out _);
+        Services.RemoveAll(c => c.GetType() == typeof(T));
     }
+
+    public static T? GetService<T>() where T : IReportingService =>
+        (T?)Services.Find(c => c.GetType() == typeof(T));
 }

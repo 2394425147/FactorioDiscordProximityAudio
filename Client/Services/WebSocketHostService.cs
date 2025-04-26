@@ -2,7 +2,6 @@
 using System.Net.WebSockets;
 using System.Text;
 
-
 namespace Client.Services;
 
 public sealed class WebSocketHostService(int port) : IReportingService
@@ -12,7 +11,10 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
     public bool Started { get; private set; }
 
-    private HttpListener? HttpListener { get; set; }
+    private HttpListener?         HttpListener         { get; set; }
+    private PlayerTrackerService? PlayerTrackerService { get; set; }
+
+    private HashSet<HttpListenerWebSocketContext> Clients { get; } = [];
 
     public Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
@@ -51,9 +53,9 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
             if (context.Request.IsWebSocketRequest)
             {
-                var socket     = await context.AcceptWebSocketAsync(subProtocol: null);
-                var socketId   = Guid.NewGuid();
-                var socketTask = HandleSocketAsync(progress, socket, socketId);
+                var socket = await context.AcceptWebSocketAsync(subProtocol: null);
+                Clients.Add(socket);
+                _ = Task.Run(() => HandleSocketAsync(progress, socket), cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -65,33 +67,149 @@ public sealed class WebSocketHostService(int port) : IReportingService
         }
     }
 
-    private async Task HandleSocketAsync(IProgress<LogItem> progress, HttpListenerWebSocketContext socket, Guid socketId)
+    private async Task HandleSocketAsync(IProgress<LogItem> progress, HttpListenerWebSocketContext socket)
     {
-        while (socket.WebSocket.State == WebSocketState.Open)
+        try
         {
-            var buffer   = new Memory<byte>(new byte[4096]);
-            var received = await socket.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
-            buffer = buffer[..received.Count];
-
-            if (received.MessageType == WebSocketMessageType.Close)
+            var discordId = string.Empty;
+            while (socket.WebSocket.State == WebSocketState.Open)
             {
-                await socket.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-            }
-            else
-            {
-                var message = Encoding.UTF8.GetString(buffer.Span);
-                progress.Report(new LogItem($"Received message: {message}", LogItem.LogType.Info));
+                var buffer = new Memory<byte>(new byte[4096]);
 
-                var response = Encoding.UTF8.GetBytes("Hello, " + message + "!");
-                await socket.WebSocket.SendAsync(response, WebSocketMessageType.Text, true, CancellationToken.None);
+                var received = await socket.WebSocket.ReceiveAsync(
+                    buffer,
+                    CancellationToken.None
+                );
+
+                switch (received.MessageType)
+                {
+                    case WebSocketMessageType.Text:
+                    {
+                        buffer = buffer[..received.Count];
+                        if (buffer.Length == 0)
+                            break;
+
+                        discordId = DiscordUtility.GetFixedLengthUid(Encoding.ASCII.GetString(buffer.Span));
+                        await InitializePlayers(socket);
+                        break;
+                    }
+                    case WebSocketMessageType.Binary:
+                    {
+                        buffer = buffer[..received.Count];
+                        if (buffer.Length == 0)
+                            break;
+
+                        await BroadcastPositionPacket(buffer, discordId);
+                        break;
+                    }
+                    case WebSocketMessageType.Close:
+                    {
+                        await socket.WebSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closed by client.",
+                                                          CancellationToken.None);
+                        Clients.Remove(socket);
+
+                        await BroadcastDisconnectPacket(discordId);
+                        break;
+                    }
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+
+                await Task.Yield();
             }
         }
+        catch (Exception e)
+        {
+            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+        }
+
+        socket.WebSocket.Dispose();
+    }
+
+    private async Task InitializePlayers(HttpListenerWebSocketContext socket)
+    {
+        PlayerTrackerService ??= Program.GetService<PlayerTrackerService>();
+
+        using var ms = new MemoryStream();
+        await using (var binaryWriter = new BinaryWriter(ms))
+        {
+            binaryWriter.Write((byte)OpCode.InitPlayers);
+
+            if (PlayerTrackerService != null && PlayerTrackerService.Clients.Count != 0)
+            {
+                foreach (var client in PlayerTrackerService.Clients)
+                {
+                    binaryWriter.Write(Encoding.ASCII.GetBytes(DiscordUtility.GetFixedLengthUid(client.DiscordId)));
+                    binaryWriter.Write(client.X);
+                    binaryWriter.Write(client.Y);
+                    binaryWriter.Write(client.SurfaceIndex);
+                }
+            }
+        }
+
+        await socket.WebSocket.SendAsync(ms.ToArray(), WebSocketMessageType.Binary, true, CancellationToken.None);
+    }
+
+    public async Task BroadcastPositionPacket(Memory<byte> data, string discordId)
+    {
+        if (HttpListener == null)
+            return;
+
+        using var ms = new MemoryStream();
+        await using (var binaryWriter = new BinaryWriter(ms))
+        {
+            binaryWriter.Write((byte)OpCode.Position);
+            binaryWriter.Write(data.Span);
+            binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
+        }
+
+        var memory = ms.ToArray();
+        var tasks  = new List<Task>();
+        foreach (var client in Clients)
+            tasks.Add(client.WebSocket.SendAsync(memory, WebSocketMessageType.Binary, true, CancellationToken.None));
+        await Task.WhenAll(tasks);
+    }
+
+    private async Task BroadcastDisconnectPacket(string discordId)
+    {
+        if (HttpListener == null)
+            return;
+
+        using var ms = new MemoryStream();
+        await using (var binaryWriter = new BinaryWriter(ms))
+        {
+            binaryWriter.Write((byte)OpCode.Disconnect);
+            binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
+        }
+
+        var memory = ms.ToArray();
+        var tasks  = new List<Task>();
+        foreach (var client in Clients)
+            tasks.Add(client.WebSocket.SendAsync(memory, WebSocketMessageType.Binary, true, CancellationToken.None));
+        await Task.WhenAll(tasks);
     }
 
     public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
-        HttpListener?.Stop();
-        Started = false;
+        try
+        {
+            Clients.Clear();
+            HttpListener?.Close();
+            HttpListener?.Stop();
+            Started = false;
+        }
+        catch (Exception e)
+        {
+            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+        }
+
         return Task.CompletedTask;
+    }
+
+    public enum OpCode : byte
+    {
+        InitPlayers,
+        Position,
+        Disconnect
     }
 }
