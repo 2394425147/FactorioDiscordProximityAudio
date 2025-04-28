@@ -35,10 +35,8 @@ sealed partial class Main
         components = new System.ComponentModel.Container();
         DataGridViewCellStyle dataGridViewCellStyle1 = new DataGridViewCellStyle();
         DataGridViewCellStyle dataGridViewCellStyle2 = new DataGridViewCellStyle();
-        ipTextbox = new TextBox();
         label1 = new Label();
         label2 = new Label();
-        portTextbox = new TextBox();
         connectButton = new Button();
         isClient = new RadioButton();
         isHost = new RadioButton();
@@ -51,17 +49,12 @@ sealed partial class Main
         yDataGridViewTextBoxColumn = new DataGridViewTextBoxColumn();
         surfaceIndexDataGridViewTextBoxColumn = new DataGridViewTextBoxColumn();
         clientPositionBindingSource = new BindingSource(components);
+        ipTextbox = new PastableTextBox();
+        portTextbox = new PastableTextBox();
         panel1.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)playerDataGrid).BeginInit();
         ((System.ComponentModel.ISupportInitialize)clientPositionBindingSource).BeginInit();
         SuspendLayout();
-        // 
-        // ipTextbox
-        // 
-        ipTextbox.Location = new Point(391, 12);
-        ipTextbox.Name = "ipTextbox";
-        ipTextbox.Size = new Size(289, 23);
-        ipTextbox.TabIndex = 0;
         // 
         // label1
         // 
@@ -82,13 +75,6 @@ sealed partial class Main
         label2.TabIndex = 2;
         label2.Text = "Port";
         label2.TextAlign = ContentAlignment.MiddleLeft;
-        // 
-        // portTextbox
-        // 
-        portTextbox.Location = new Point(721, 12);
-        portTextbox.Name = "portTextbox";
-        portTextbox.Size = new Size(61, 23);
-        portTextbox.TabIndex = 3;
         // 
         // connectButton
         // 
@@ -207,16 +193,33 @@ sealed partial class Main
         // 
         clientPositionBindingSource.DataSource = typeof(Models.ClientPosition);
         // 
+        // ipTextbox
+        // 
+        ipTextbox.Location = new Point(391, 12);
+        ipTextbox.Name = "ipTextbox";
+        ipTextbox.Size = new Size(289, 23);
+        ipTextbox.TabIndex = 11;
+        ipTextbox.Pasted += AddressPasted;
+        ipTextbox.TextChanged += OnIPTextChanged;
+        // 
+        // portTextbox
+        // 
+        portTextbox.Location = new Point(721, 12);
+        portTextbox.Name = "portTextbox";
+        portTextbox.Size = new Size(61, 23);
+        portTextbox.TabIndex = 12;
+        portTextbox.Pasted += AddressPasted;
+        // 
         // Main
         // 
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         ClientSize = new Size(917, 448);
+        Controls.Add(portTextbox);
+        Controls.Add(ipTextbox);
         Controls.Add(playerDataGrid);
         Controls.Add(logList);
         Controls.Add(panel1);
-        Controls.Add(portTextbox);
-        Controls.Add(ipTextbox);
         Controls.Add(label2);
         Controls.Add(label1);
         Controls.Add(connectButton);
@@ -234,11 +237,8 @@ sealed partial class Main
     }
 
     #endregion
-
-    private TextBox ipTextbox;
     private Label label1;
     private Label label2;
-    private TextBox portTextbox;
     private Button connectButton;
     private RadioButton isHost;
     private RadioButton isClient;
@@ -251,4 +251,6 @@ sealed partial class Main
     private DataGridViewTextBoxColumn xDataGridViewTextBoxColumn;
     private DataGridViewTextBoxColumn yDataGridViewTextBoxColumn;
     private DataGridViewTextBoxColumn surfaceIndexDataGridViewTextBoxColumn;
+    private PastableTextBox ipTextbox;
+    private PastableTextBox portTextbox;
 }

@@ -1,5 +1,6 @@
 using System.Net.NetworkInformation;
 using Client.Services;
+using Client.VisualComponents;
 
 namespace Client;
 
@@ -327,5 +328,27 @@ public sealed partial class Main : Form
         TextRenderer.DrawText(e.Graphics, timeString, logList.Font, new Point(4, y), Color.Gray);
         TextRenderer.DrawText(e.Graphics, item.message, logList.Font, new Point(size.Width + 8, y),
                               LogItem.GetColor(item.type));
+    }
+
+    private void AddressPasted(object sender, ClipboardEventArgs e)
+    {
+        var args = e.ClipboardText.Split(':');
+        if (args.Length != 2)
+        {
+            ((PastableTextBox)sender).Text = e.ClipboardText;
+            return;
+        }
+
+        ipTextbox.Text   = args[0];
+        portTextbox.Text = args[1];
+    }
+
+    private void OnIPTextChanged(object sender, EventArgs e)
+    {
+        if (ipTextbox.Text[^1] != ':')
+            return;
+
+        ipTextbox.Text = ipTextbox.Text[..^1];
+        portTextbox.Focus();
     }
 }
