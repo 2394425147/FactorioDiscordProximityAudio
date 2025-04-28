@@ -23,4 +23,6 @@ public static class DiscordUtility
 
         return new Guid(bytes);
     }
+
+    public static string[] GetNamedPipes() => Directory.GetFiles(@"\\.\pipe\", "discord-ipc-*");
 }

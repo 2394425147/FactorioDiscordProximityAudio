@@ -78,8 +78,5 @@ namespace Client
             process?.WaitForExit();
             return process?.ExitCode == 0;
         }
-
-
-        public static string[] GetDiscordNamedPipes() => Directory.GetFiles(@"\\.\pipe\", "discord-ipc-*");
     }
 }

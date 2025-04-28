@@ -1,5 +1,4 @@
-﻿using System.Net.WebSockets;
-using System.Text;
+﻿using System.Text;
 using Client.Models;
 using PHS.Networking.Enums;
 using WebsocketsSimple.Client;
@@ -13,7 +12,7 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
     public  bool                        Started             { get; private set; }
     private IProgress<LogItem>?         Progress            { get; set; }
     private FactorioFileWatcherService? FactorioFileWatcher { get; set; }
-    private DiscordNamedPipeService?    DiscordNamedPipe    { get; set; }
+    private DiscordPipeService?    DiscordNamedPipe    { get; set; }
     private WebsocketClient?            WebSocket           { get; set; }
 
     public event OnAnyClientUpdateReceived? AnyClientUpdateReceived;
@@ -27,11 +26,11 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
     {
         Progress            = progress;
         FactorioFileWatcher = Program.GetService<FactorioFileWatcherService>();
-        DiscordNamedPipe    = Program.GetService<DiscordNamedPipeService>();
+        DiscordNamedPipe    = Program.GetService<DiscordPipeService>();
 
         if (FactorioFileWatcher == null || DiscordNamedPipe == null)
         {
-            progress.Report(new LogItem($"{nameof(FactorioFileWatcherService)} or {nameof(DiscordNamedPipeService)} not found.",
+            progress.Report(new LogItem($"{nameof(FactorioFileWatcherService)} or {nameof(DiscordPipeService)} not found.",
                                         LogItem.LogType.Error));
             return;
         }
@@ -62,14 +61,14 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
         if (args.ConnectionEventType != ConnectionEventType.Connected)
             return;
 
-        if (DiscordNamedPipe?.HandshakePacket == null)
+        if (DiscordNamedPipe?.LocalUser == null)
         {
             Progress?.Report(new LogItem("Discord handshake not established before websocket connection.",
                                          LogItem.LogType.Error));
             return;
         }
 
-        Task.Run(() => SendIdentificationPacket(DiscordNamedPipe.HandshakePacket.data.user.id));
+        Task.Run(() => SendIdentificationPacket(DiscordNamedPipe.LocalUser.id));
     }
 
     private void OnMessageSentOrReceived(object sender, WSMessageClientEventArgs args)
@@ -162,7 +161,7 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
 
     private async Task SendPositionPacket(FactorioPosition obj)
     {
-        if (DiscordNamedPipe?.HandshakePacket == null || WebSocket == null)
+        if (DiscordNamedPipe?.LocalUser == null || WebSocket == null)
             return;
 
         using var ms = new MemoryStream();

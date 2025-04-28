@@ -15,7 +15,7 @@ internal static class Program
     {
         applicationExitCancellationToken = new CancellationTokenSource();
 
-        RegisterService(new DiscordNamedPipeService());
+        RegisterService(new DiscordPipeService());
         RegisterService(new FactorioFileWatcherService());
 
         // To customize application configuration such as set high DPI settings or default font,
