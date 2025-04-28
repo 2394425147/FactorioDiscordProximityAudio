@@ -87,7 +87,20 @@ public sealed partial class Main : Form
             return;
         }
 
-        var logger = new Progress<LogItem>(logItem => uiThreadControl.Invoke(() => AppendToLog(logItem)));
+        var logger = new Progress<LogItem>(logItem =>
+        {
+            if (uiThreadControl.IsHandleCreated)
+            {
+                if (uiThreadControl.InvokeRequired)
+                    uiThreadControl.Invoke(() => AppendToLog(logItem));
+                else
+                    AppendToLog(logItem);
+            }
+            else
+            {
+                AppendToLog(logItem, true);
+            }
+        });
         var tasks = Program.Services.Select(c => c.StartClient(logger,
                                                                Program.applicationExitCancellationToken?.Token ??
                                                                CancellationToken.None)).ToList();
@@ -211,8 +224,22 @@ public sealed partial class Main : Form
     {
         await uiThreadControl.InvokeAsync(() => { connectButton.Text = "Disconnecting..."; });
 
-        var logger = new Progress<LogItem>(logItem => uiThreadControl.Invoke(() => AppendToLog(logItem)));
-        var tasks  = new List<Task>(Program.Services.Count);
+        var logger = new Progress<LogItem>(logItem =>
+        {
+            if (uiThreadControl.IsHandleCreated)
+            {
+                if (uiThreadControl.InvokeRequired)
+                    uiThreadControl.Invoke(() => AppendToLog(logItem));
+                else
+                    AppendToLog(logItem);
+            }
+            else
+            {
+                AppendToLog(logItem, true);
+            }
+        });
+
+        var tasks = new List<Task>(Program.Services.Count);
         for (var i = Program.Services.Count - 1; i >= 0; i--)
         {
             var service = Program.Services[i];
@@ -257,23 +284,24 @@ public sealed partial class Main : Form
         logList.Items.Clear();
     }
 
-    public void AppendToLog(LogItem logItem)
+    public void AppendToLog(LogItem logItem, bool writeToFileOnly = false)
     {
         while (logList.Items.Count >= MaxLogLines)
             logList.Items.RemoveAt(0);
 
-        var visibleLineCount = logList.ClientSize.Height / logList.ItemHeight;
-        var isAtBottom       = logList.Items.Count - logList.TopIndex <= visibleLineCount + 1;
-        logList.Items.Add(logItem);
-        _fileSystemLogWriter?.WriteLine($"[{logItem.time}] [{logItem.type}] {logItem.message}");
+        if (!writeToFileOnly)
+        {
+            var visibleLineCount = logList.ClientSize.Height / logList.ItemHeight;
+            var isAtBottom       = logList.Items.Count - logList.TopIndex <= visibleLineCount + 1;
+            logList.Items.Add(logItem);
+            _fileSystemLogWriter?.WriteLine($"[{logItem.time}] [{logItem.type}] {logItem.message}");
+            if (isAtBottom) logList.TopIndex = logList.Items.Count - 1;
+        }
 
         if (logItem.details != null)
             _fileSystemLogWriter?.WriteLine(logItem.details);
 
         _fileSystemLogWriter?.Flush();
-
-        if (isAtBottom)
-            logList.TopIndex = logList.Items.Count - 1;
     }
 
     private void Main_FormClosing(object sender, FormClosingEventArgs e)

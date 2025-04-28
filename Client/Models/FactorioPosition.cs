@@ -20,4 +20,14 @@ public struct FactorioPosition : IEquatable<FactorioPosition>
     {
         return HashCode.Combine(x, y, surfaceIndex);
     }
+
+    public static bool operator ==(FactorioPosition left, FactorioPosition right)
+    {
+        return left.Equals(right);
+    }
+
+    public static bool operator !=(FactorioPosition left, FactorioPosition right)
+    {
+        return !(left == right);
+    }
 }

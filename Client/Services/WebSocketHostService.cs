@@ -21,7 +21,7 @@ public sealed class WebSocketHostService(int port) : IReportingService
     public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
     {
         Progress = progress;
-        // Execute netsh http add urlacl url=http://+:port/ user=DOMAIN\user as admin
+
         if (!AddressUtility.CheckUrlReservation(port))
         {
             progress.Report(new LogItem($"Reserving port {port} for websocket...", LogItem.LogType.Info));
@@ -30,14 +30,14 @@ public sealed class WebSocketHostService(int port) : IReportingService
                 progress.Report(new LogItem("Failed to reserve port. Websocket connection may fail.", LogItem.LogType.Error));
         }
 
-        progress.Report(new LogItem($"Opening websocket...", LogItem.LogType.Info));
+        progress.Report(new LogItem("Opening websocket...", LogItem.LogType.Info));
 
         WebsocketServer                 =  new WebsocketServer(new ParamsWSServer(port));
         WebsocketServer.MessageEvent    += OnMessageSentOrReceived;
         WebsocketServer.ConnectionEvent += OnClientConnectionChanged;
         await WebsocketServer.StartAsync(cancellationToken);
 
-        progress.Report(new LogItem($"Listening for websocket connections at *:{port}...", LogItem.LogType.Info));
+        progress.Report(new LogItem($"Listening for connections at port {port}.", LogItem.LogType.Info));
         Started = true;
     }
 

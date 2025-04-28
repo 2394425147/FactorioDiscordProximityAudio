@@ -4,7 +4,7 @@ namespace Client.Services;
 
 public sealed class FactorioFileWatcherService : IReportingService
 {
-    public bool                    Started { get; private set; }
+    public bool                            Started { get; private set; }
     public event Action<FactorioPosition>? OnPositionUpdated;
     public FactorioPosition?               LastPositionPacket { get; private set; }
 

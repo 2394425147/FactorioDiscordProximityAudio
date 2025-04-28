@@ -46,7 +46,7 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
             await WebSocket.ConnectAsync(cancellationToken);
 
             FactorioFileWatcher.OnPositionUpdated += OnLocalPositionUpdated;
-            progress.Report(new LogItem($"Connected to {address}:{port}.", LogItem.LogType.Info));
+            progress.Report(new LogItem("Connected to host.", LogItem.LogType.Info));
         }
         catch (Exception e)
         {
@@ -59,11 +59,17 @@ public sealed class WebSocketClientService(string address, int port) : IReportin
 
     private void OnConnectionChanged(object sender, WSConnectionClientEventArgs args)
     {
-        if (args.ConnectionEventType == ConnectionEventType.Connected)
+        if (args.ConnectionEventType != ConnectionEventType.Connected)
+            return;
+
+        if (DiscordNamedPipe?.HandshakePacket == null)
         {
-            if (DiscordNamedPipe?.HandshakePacket != null)
-                Task.Run(() => SendIdentificationPacket(DiscordNamedPipe.HandshakePacket.data.user.id));
+            Progress?.Report(new LogItem("Discord handshake not established before websocket connection.",
+                                         LogItem.LogType.Error));
+            return;
         }
+
+        Task.Run(() => SendIdentificationPacket(DiscordNamedPipe.HandshakePacket.data.user.id));
     }
 
     private void OnMessageSentOrReceived(object sender, WSMessageClientEventArgs args)
