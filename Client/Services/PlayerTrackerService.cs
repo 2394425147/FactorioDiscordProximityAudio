@@ -1,110 +1,70 @@
 ﻿using Client.Models;
-using Dec.DiscordIPC.Commands;
 
 namespace Client.Services;
 
-public sealed class PlayerTrackerService : IReportingService
+public sealed class PlayerTrackerService : IService
 {
-    public bool                 Started                 { get; private set; }
-    public BindingSource        BindableClientPositions { get; } = new();
-    public List<ClientPosition> Clients                 { get; } = [];
+    public bool                               Started { get; private set; }
+    public Dictionary<string, ClientPosition> Clients { get; } = [];
 
-    private IProgress<LogItem>?         Progress                   { get; set; }
-    private DiscordPipeService?       DiscordNamedPipeService    { get; set; }
-    private WebSocketClientService?     WebSocketClientService     { get; set; }
-    public  FactorioFileWatcherService? FactorioFileWatcherService { get; set; }
+    private DiscordPipeService?            DiscordPipe            { get; set; }
+    private PositionTransferClientService? PositionTransferClient { get; set; }
+    public  FactorioFileWatcherService?    FactorioFileWatcher    { get; set; }
 
-    public Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken = default)
+    public Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        Progress = progress;
+        DiscordPipe            = services.GetService(typeof(DiscordPipeService)) as DiscordPipeService;
+        PositionTransferClient = services.GetService(typeof(PositionTransferClientService)) as PositionTransferClientService;
+        FactorioFileWatcher    = services.GetService(typeof(FactorioFileWatcherService)) as FactorioFileWatcherService;
 
-        DiscordNamedPipeService    = Program.GetService<DiscordPipeService>();
-        WebSocketClientService     = Program.GetService<WebSocketClientService>();
-        FactorioFileWatcherService = Program.GetService<FactorioFileWatcherService>();
-
-        UpdateDataGrid(true);
-
-        if (WebSocketClientService != null)
+        if (PositionTransferClient != null)
         {
-            WebSocketClientService.AnyClientUpdateReceived += OnClientUpdateReceived;
-            WebSocketClientService.AnyClientDisconnected   += OnClientDisconnected;
+            PositionTransferClient.AnyClientUpdateReceived += OnClientUpdateReceived;
+            PositionTransferClient.AnyClientDisconnected   += OnClientDisconnected;
+        }
+
+        if (FactorioFileWatcher != null)
+        {
+            FactorioFileWatcher.OnPositionUpdated += OnLocalPositionUpdated;
         }
 
         Started = true;
         return Task.CompletedTask;
     }
 
-    private void UpdateDataGrid(bool resetDataSource)
-    {
-        if (Main.uiThreadControl.IsHandleCreated)
-        {
-            if (Main.uiThreadControl.InvokeRequired)
-                Main.uiThreadControl.Invoke(() =>
-                {
-                    if (resetDataSource)
-                        BindableClientPositions.DataSource = Clients;
-                    BindableClientPositions.ResetBindings(false);
-                });
-            else
-            {
-                BindableClientPositions.DataSource = Clients;
-                BindableClientPositions.ResetBindings(false);
-            }
-        }
-    }
-
     private void OnClientUpdateReceived(string discordId, FactorioPosition position)
     {
-        var index = Clients.FindIndex(c => c.DiscordId == discordId);
-        if (index == -1)
+        Clients[discordId] = new ClientPosition
         {
-            Clients.Add(new ClientPosition
-            {
-                DiscordId    = discordId,
-                X            = position.x,
-                Y            = position.y,
-                SurfaceIndex = position.surfaceIndex,
-            });
+            DiscordId = discordId,
+            Position  = position
+        };
 
-            Progress?.Report(new LogItem($"Client {discordId} has joined the game.", LogItem.LogType.Info));
-        }
-        else
-        {
-            var clientPosition = Clients[index];
-            clientPosition.X            = position.x;
-            clientPosition.Y            = position.y;
-            clientPosition.SurfaceIndex = position.surfaceIndex;
-        }
-
-        if (FactorioFileWatcherService?.LastPositionPacket != null)
-        {
-            // TODO)) Update all client positions when local player moves to a different surface.
-            CalculatePan(FactorioFileWatcherService.LastPositionPacket.Value, position, out var left, out var right);
-            DiscordNamedPipeService?.SetUserVoiceSettings(discordId, new SetUserVoiceSettings.Pan
-            {
-                left  = left,
-                right = right
-            });
-        }
-
-        UpdateDataGrid(false);
-    }
-
-    public static void CalculatePan(FactorioPosition localPosition, FactorioPosition position, out float left, out float right)
-    {
-        left  = 0;
-        right = 0;
-        if (localPosition.surfaceIndex != position.surfaceIndex)
+        if (FactorioFileWatcher?.LastPositionPacket == null)
             return;
 
+        var volume = CalculateVolume(FactorioFileWatcher.LastPositionPacket.Value, position);
+        DiscordPipe?.SetUserVoiceSettings(discordId, volume);
+    }
+
+    private void OnLocalPositionUpdated(FactorioPosition obj)
+    {
+        foreach (var client in Clients.Values)
+        {
+            var volume = CalculateVolume(obj, client.Position);
+            DiscordPipe?.SetUserVoiceSettings(client.DiscordId, volume);
+        }
+    }
+
+    public static float CalculateVolume(FactorioPosition localPosition, FactorioPosition position)
+    {
+        if (localPosition.surfaceIndex != position.surfaceIndex)
+            return 0;
+
         const double falloffRadiusSqr = 100.0 * 100.0;
-        const double earOffset        = 0.5;
 
-        var leftEarDistanceSqr  = DistanceSqr(localPosition.x, localPosition.y, position.x - earOffset, position.y);
-        var rightEarDistanceSqr = DistanceSqr(localPosition.x, localPosition.y, position.x + earOffset, position.y);
-
-        left  = Proximity(leftEarDistanceSqr,  falloffRadiusSqr);
-        right = Proximity(rightEarDistanceSqr, falloffRadiusSqr);
+        var leftEarDistanceSqr = DistanceSqr(localPosition.x, localPosition.y, position.x, position.y);
+        return Proximity(leftEarDistanceSqr, falloffRadiusSqr) * 100f;
     }
 
     private static double DistanceSqr(double x1, double y1, double x2, double y2)
@@ -117,27 +77,24 @@ public sealed class PlayerTrackerService : IReportingService
         if (leftEarDistanceSqr > falloffRadiusSqr)
             return 0f;
 
-        return (float)(1 - (falloffRadiusSqr - leftEarDistanceSqr) / falloffRadiusSqr);
+        var result = (float)(1 - leftEarDistanceSqr / falloffRadiusSqr);
+        return result;
     }
 
     private void OnClientDisconnected(string discordId)
     {
-        var index = Clients.FindIndex(c => c.DiscordId == discordId);
-
-        if (index == -1)
+        if (!Clients.Remove(discordId))
             return;
 
-        Clients.RemoveAt(index);
-        Progress?.Report(new LogItem($"Client {discordId} disconnected.", LogItem.LogType.Info));
-        UpdateDataGrid(false);
+        DiscordPipe?.SetUserVoiceSettings(discordId, null);
     }
 
-    public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken = default)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
-        if (WebSocketClientService != null)
+        if (PositionTransferClient != null)
         {
-            WebSocketClientService.AnyClientUpdateReceived -= OnClientUpdateReceived;
-            WebSocketClientService.AnyClientDisconnected   -= OnClientDisconnected;
+            PositionTransferClient.AnyClientUpdateReceived -= OnClientUpdateReceived;
+            PositionTransferClient.AnyClientDisconnected   -= OnClientDisconnected;
         }
 
         Started = false;

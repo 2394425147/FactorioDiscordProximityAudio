@@ -1,11 +1,15 @@
+using System.ComponentModel.Design;
 using Client.Services;
 
 namespace Client;
 
 internal static class Program
 {
-    public static readonly List<IReportingService>  Services = [];
-    public static          CancellationTokenSource? applicationExitCancellationToken;
+    public static CancellationToken ApplicationExitCancellationToken => ApplicationExitCancellationTokenSource.Token;
+
+    private static readonly CancellationTokenSource ApplicationExitCancellationTokenSource = new();
+    private static readonly ServiceContainer        ServiceContainer                       = new();
+    private static          ServicesMarshal?        _servicesMarshal;
 
     /// <summary>
     ///  The main entry point for the application.
@@ -13,47 +17,34 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        applicationExitCancellationToken = new CancellationTokenSource();
+        ServiceContainer.AddService(typeof(FactorioFileWatcherService),    new FactorioFileWatcherService());
+        ServiceContainer.AddService(typeof(DiscordPipeService),            new DiscordPipeService());
+        ServiceContainer.AddService(typeof(PositionTransferClientService), new PositionTransferClientService());
+        ServiceContainer.AddService(typeof(PositionTransferHostService),   new PositionTransferHostService());
+        ServiceContainer.AddService(typeof(PlayerTrackerService),          new PlayerTrackerService());
 
-        RegisterService(new DiscordPipeService());
-        RegisterService(new FactorioFileWatcherService());
+        _servicesMarshal = new ServicesMarshal(ServiceContainer);
 
         // To customize application configuration such as set high DPI settings or default font,
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
         Application.ApplicationExit += Application_ApplicationExit;
-        Application.Run(new Main());
+        Application.Run(new Main(_servicesMarshal));
     }
 
-    private static void Application_ApplicationExit(object? sender, EventArgs e)
+    private static async void Application_ApplicationExit(object? sender, EventArgs e)
     {
         try
         {
-            var emptyProgress = new Progress<LogItem>();
-            for (var i = Services.Count - 1; i >= 0; i--)
-            {
-                var reportingService = Services[i];
-                reportingService.StopClient(emptyProgress, CancellationToken.None).GetAwaiter().GetResult();
-            }
-            applicationExitCancellationToken?.Cancel();
+            if (_servicesMarshal != null)
+                await _servicesMarshal.StopAsync();
+
+            ServiceContainer.Dispose();
+            await ApplicationExitCancellationTokenSource.CancelAsync();
         }
         catch (Exception)
         {
             // ignored
         }
     }
-
-    public static void RegisterService<T>(T service) where T : IReportingService =>
-        Services.Add(service);
-
-    public static void UnregisterService<T>() where T : IReportingService
-    {
-        Services.RemoveAll(c => c.GetType() == typeof(T));
-    }
-
-    public static T? GetService<T>() where T : IReportingService =>
-        (T?)Services.Find(c => c.GetType() == typeof(T));
 }

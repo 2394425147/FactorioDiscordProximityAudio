@@ -4,20 +4,21 @@ using Dec.DiscordIPC;
 using Dec.DiscordIPC.Commands;
 using Dec.DiscordIPC.Entities;
 using Dec.DiscordIPC.Events;
+using Serilog;
 
 namespace Client.Services;
 
-public sealed class DiscordPipeService : IReportingService
+public sealed class DiscordPipeService : IService
 {
     // TODO)) Replace with .env
     ***REMOVED***
     ***REMOVED***
 
-    public  bool                                 Started     { get; private set; }
-    public  User?                                LocalUser   { get; set; }
-    public  Dictionary<string, DiscordVoiceUser> VoiceUsers  { get; set; } = new();
-    private DiscordIPC?                          DiscordPipe { get; set; }
-    private HttpClient?                          HttpClient  { get; set; }
+    public  bool                      Started        { get; private set; }
+    public  User?                     LocalUser      { get; set; }
+    public  Dictionary<string, float> DefaultVolumes { get; set; } = new();
+    private DiscordIPC?               DiscordPipe    { get; set; }
+    private HttpClient?               HttpClient     { get; set; }
 
     private string? CurrentVoiceChannel { get; set; }
 
@@ -26,21 +27,19 @@ public sealed class DiscordPipeService : IReportingService
         UseProxy = true
     };
 
-    private IProgress<LogItem>? Progress { get; set; }
-
     public DiscordPipeService()
     {
         HttpClient             = new HttpClient(_httpRequestHandler);
         HttpClient.BaseAddress = new Uri("https://discord.com/");
     }
 
-    public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        Progress = progress;
-        Started  = false;
+        Started = false;
 
         if (DiscordPipe == null)
         {
+            Log.Information("Connecting to Discord...");
             DiscordPipe = new DiscordIPC(ApplicationClientId);
             await DiscordPipe.InitAsync();
 
@@ -57,7 +56,7 @@ public sealed class DiscordPipeService : IReportingService
                 var oauth2 = await GetOAuth2Token(codeResponse.code);
                 if (oauth2 == null)
                 {
-                    Progress!.Report(new LogItem("Failed to get OAuth2 token.", LogItem.LogType.Error));
+                    Log.Error("Failed to get OAuth2 token. Make sure you have a stable internet connection.");
                     return;
                 }
 
@@ -65,27 +64,37 @@ public sealed class DiscordPipeService : IReportingService
             }
             catch (ErrorResponseException)
             {
-                progress.Report(new LogItem("Authorization denied.", LogItem.LogType.Error));
+                Log.Error("Authorization denied.");
                 return;
             }
 
-            var authData = await DiscordPipe.SendCommandAsync(new Authenticate.Args
+            try
             {
-                access_token = accessToken,
-            });
+                var authData = await DiscordPipe.SendCommandAsync(new Authenticate.Args
+                {
+                    access_token = accessToken,
+                });
 
-            LocalUser = authData.user;
+                LocalUser = authData.user;
 
-            var selectedVoiceChannel = await DiscordPipe.SendCommandAsync(new GetSelectedVoiceChannel.Args());
+                var selectedVoiceChannel = await DiscordPipe.SendCommandAsync(new GetSelectedVoiceChannel.Args());
 
-            if (selectedVoiceChannel != null && !string.IsNullOrEmpty(selectedVoiceChannel.id))
-            {
-                CurrentVoiceChannel = selectedVoiceChannel.id;
-                SetVoiceMembers(selectedVoiceChannel.voice_states);
+                if (selectedVoiceChannel != null && !string.IsNullOrEmpty(selectedVoiceChannel.id))
+                {
+                    CurrentVoiceChannel = selectedVoiceChannel.id;
+                    SetVoiceMembers(selectedVoiceChannel.voice_states);
+                }
+
+                DiscordPipe.OnVoiceChannelSelect += OnVoiceChannelSelect;
+                await DiscordPipe.SubscribeAsync(new VoiceChannelSelect.Args());
+
+                Log.Information("Connected to Discord as {Username}.", LocalUser.username);
             }
-
-            DiscordPipe.OnVoiceChannelSelect += OnVoiceChannelSelect;
-            await DiscordPipe.SubscribeAsync(new VoiceChannelSelect.Args());
+            catch (Exception e)
+            {
+                Log.Fatal(e, "Error initializing Discord IPC: {Message}", e.Message);
+                throw;
+            }
         }
 
         Started = true;
@@ -98,9 +107,8 @@ public sealed class DiscordPipeService : IReportingService
             if (voice.user.id == LocalUser!.id)
                 continue;
 
-            Progress?.Report(new LogItem($"User {voice.user.id} added.", LogItem.LogType.Info));
-            VoiceUsers[voice.user.id] =
-                new DiscordVoiceUser(voice.user.id, voice.pan.left.GetValueOrDefault(1), voice.pan.right.GetValueOrDefault(1));
+            Log.Information("Tracking {Username} from Discord.", voice.user.username);
+            DefaultVolumes[voice.user.id] = voice.volume.GetValueOrDefault(100);
         }
     }
 
@@ -113,17 +121,19 @@ public sealed class DiscordPipeService : IReportingService
                 if (CurrentVoiceChannel == null)
                     return;
 
-                Progress?.Report(new LogItem($"Left Discord voice channel.", LogItem.LogType.Info));
+                Log.Information($"Left Discord voice channel.");
+                foreach (var (discordId, volume) in DefaultVolumes)
+                    await SetUserVoiceSettings(discordId, volume);
+                DefaultVolumes.Clear();
                 DiscordPipe!.OnVoiceStateCreate -= OnVoiceStateCreate;
-                await DiscordPipe.UnsubscribeAsync(new VoiceStateCreate.Args
-                {
-                    channel_id = CurrentVoiceChannel
-                });
+                await DiscordPipe.UnsubscribeAsync(new VoiceStateCreate.Args { channel_id = CurrentVoiceChannel });
                 CurrentVoiceChannel = null;
                 return;
             }
 
             CurrentVoiceChannel = data.channel_id;
+            var voiceChannelInfo = await DiscordPipe!.SendCommandAsync(new GetSelectedVoiceChannel.Args());
+            SetVoiceMembers(voiceChannelInfo.voice_states);
 
             DiscordPipe!.OnVoiceStateCreate += OnVoiceStateCreate;
             await DiscordPipe.SubscribeAsync(new VoiceStateCreate.Args
@@ -133,7 +143,7 @@ public sealed class DiscordPipeService : IReportingService
         }
         catch (Exception e)
         {
-            Progress!.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+            Log.Fatal(e, "Error while join/leaving voice channel: {Message}", e.Message);
         }
     }
 
@@ -142,9 +152,8 @@ public sealed class DiscordPipeService : IReportingService
         if (e.user.id == LocalUser!.id)
             return;
 
-        Progress?.Report(new LogItem($"User {e.user.id} added.", LogItem.LogType.Info));
-        VoiceUsers[e.user.id] =
-            new DiscordVoiceUser(e.user.id, e.pan.left.GetValueOrDefault(1), e.pan.right.GetValueOrDefault(1));
+        Log.Information("Tracking {UserUsername} from Discord.", e.user.username);
+        DefaultVolumes[e.user.id] = e.volume.GetValueOrDefault(100);
     }
 
     private async Task<HttpAuthenticationContent?> GetOAuth2Token(string code)
@@ -172,30 +181,31 @@ public sealed class DiscordPipeService : IReportingService
         return httpAuthentication;
     }
 
-    public async Task SetUserVoiceSettings(string discordId, SetUserVoiceSettings.Pan pan)
+    public async Task SetUserVoiceSettings(string discordId, float? volume)
     {
         if (DiscordPipe == null)
             return;
 
+        if (!DefaultVolumes.TryGetValue(discordId, out var defaultVolume))
+            return;
+
+        volume ??= defaultVolume;
+        volume *=  0.01f;
+
         var args = new SetUserVoiceSettings.Args
         {
             user_id = discordId,
-            pan     = pan
+            volume  = defaultVolume * volume
         };
 
+        // If this doesn't work, change L64 on LowLevelDiscordIPC.cs to use nonce from new parameter
+        Log.Information("Set {DiscordId} volume to {Volume}.", discordId, args.volume);
         await DiscordPipe.SendCommandAsync(args);
     }
 
-    public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
-        if (DiscordPipe != null)
-        {
-            progress.Report(new LogItem("Closing connection to Discord...", LogItem.LogType.Info));
-            DiscordPipe.Dispose();
-        }
-
-        DiscordPipe = null;
-        Started     = false;
+        Started = false;
         return Task.CompletedTask;
     }
 }

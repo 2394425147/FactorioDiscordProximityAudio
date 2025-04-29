@@ -1,25 +1,24 @@
 ﻿using Client.Models;
+using Serilog;
 
 namespace Client.Services;
 
-public sealed class FactorioFileWatcherService : IReportingService
+public sealed class FactorioFileWatcherService : IService
 {
     public bool                            Started { get; private set; }
     public event Action<FactorioPosition>? OnPositionUpdated;
     public FactorioPosition?               LastPositionPacket { get; private set; }
 
-    private string?             TargetFolderFullPath { get; set; }
-    private string?             TargetFileFullPath   { get; set; }
-    private IProgress<LogItem>? Progress             { get; set; }
-    private FileSystemWatcher?  FileSystemWatcher    { get; set; }
+    private string?            TargetFolderFullPath { get; set; }
+    private string?            TargetFileFullPath   { get; set; }
+    private FileSystemWatcher? FileSystemWatcher    { get; set; }
 
     private const string TargetFileName = "fdpa-comm";
 
-    public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
         try
         {
-            Progress = progress;
             TargetFolderFullPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                                                 "Factorio", "script-output");
             TargetFileFullPath = Path.Combine(TargetFolderFullPath, TargetFileName);
@@ -28,27 +27,31 @@ public sealed class FactorioFileWatcherService : IReportingService
 
             if (!fileStream.CanRead)
             {
-                progress.Report(new LogItem("Factorio communicator file is readonly.", LogItem.LogType.Error));
+                Log.Error("Factorio communicator file is readonly.");
                 return;
             }
 
             await fileStream.DisposeAsync();
 
-            progress.Report(new LogItem($"Watching: {TargetFileFullPath}...", LogItem.LogType.Info));
+            Log.Information("Watching: {S}...", TargetFileFullPath);
 
-            FileSystemWatcher = new FileSystemWatcher(TargetFolderFullPath, TargetFileName)
+            if (FileSystemWatcher == null)
             {
-                IncludeSubdirectories = false,
-                NotifyFilter          = NotifyFilters.LastWrite,
-                EnableRaisingEvents   = true
-            };
+                FileSystemWatcher = new FileSystemWatcher(TargetFolderFullPath, TargetFileName)
+                {
+                    IncludeSubdirectories = false,
+                    NotifyFilter          = NotifyFilters.LastWrite,
+                    EnableRaisingEvents   = true
+                };
 
-            FileSystemWatcher.Changed += OnFileSystemChanged;
-            Started                   =  true;
+                FileSystemWatcher.Changed += OnFileSystemChanged;
+            }
+
+            Started = true;
         }
         catch (Exception e)
         {
-            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+            Log.Fatal(e, "Error while starting Factorio file watcher: {Message}", e.Message);
             throw;
         }
     }
@@ -61,17 +64,17 @@ public sealed class FactorioFileWatcherService : IReportingService
         if (TargetFileFullPath == null || !File.Exists(TargetFileFullPath))
             return;
 
-        FileSystemWatcher!.EnableRaisingEvents = false;
-
-        using var reader = new StreamReader(TargetFileFullPath, new FileStreamOptions
-        {
-            Access = FileAccess.Read,
-            Mode   = FileMode.Open,
-            Share  = FileShare.ReadWrite
-        });
-
         try
         {
+            FileSystemWatcher!.EnableRaisingEvents = false;
+
+            using var reader = new StreamReader(TargetFileFullPath, new FileStreamOptions
+            {
+                Access = FileAccess.Read,
+                Mode   = FileMode.Open,
+                Share  = FileShare.ReadWrite
+            });
+
             using var file         = File.Open(TargetFileFullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var binaryReader = new BinaryReader(file);
 
@@ -92,7 +95,7 @@ public sealed class FactorioFileWatcherService : IReportingService
         }
         catch (Exception ex)
         {
-            Progress?.Report(new LogItem(ex.Message, LogItem.LogType.Error, ex.ToString()));
+            Log.Fatal(ex, "Error while reading Factorio file: {Message}", ex.Message);
         }
         finally
         {
@@ -100,10 +103,8 @@ public sealed class FactorioFileWatcherService : IReportingService
         }
     }
 
-    public Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
-        FileSystemWatcher?.Dispose();
-
         Started = false;
         return Task.CompletedTask;
     }

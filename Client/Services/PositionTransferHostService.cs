@@ -1,12 +1,13 @@
 ﻿using System.Text;
 using PHS.Networking.Enums;
+using Serilog;
 using WebsocketsSimple.Server;
 using WebsocketsSimple.Server.Events.Args;
 using WebsocketsSimple.Server.Models;
 
 namespace Client.Services;
 
-public sealed class WebSocketHostService(int port) : IReportingService
+public sealed class PositionTransferHostService : IService
 {
     public const int StartingPort   = 8970;
     public const int CheckPortCount = 1029;
@@ -15,29 +16,20 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
     private WebsocketServer?                         WebsocketServer      { get; set; }
     private PlayerTrackerService?                    PlayerTrackerService { get; set; }
-    private IProgress<LogItem>?                      Progress             { get; set; }
     private Dictionary<string, ClientConnectionInfo> Clients              { get; } = [];
 
-    public async Task StartClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        Progress = progress;
+        PlayerTrackerService = services.GetService(typeof(PlayerTrackerService)) as PlayerTrackerService;
 
-        if (!AddressUtility.CheckUrlReservation(port))
-        {
-            progress.Report(new LogItem($"Reserving port {port} for websocket...", LogItem.LogType.Info));
+        Log.Information("Opening websocket...");
 
-            if (!AddressUtility.AddUrlReservation(port))
-                progress.Report(new LogItem("Failed to reserve port. Websocket connection may fail.", LogItem.LogType.Error));
-        }
-
-        progress.Report(new LogItem("Opening websocket...", LogItem.LogType.Info));
-
-        WebsocketServer                 =  new WebsocketServer(new ParamsWSServer(port));
+        WebsocketServer                 =  new WebsocketServer(new ParamsWSServer(Main.targetPort));
         WebsocketServer.MessageEvent    += OnMessageSentOrReceived;
         WebsocketServer.ConnectionEvent += OnClientConnectionChanged;
         await WebsocketServer.StartAsync(cancellationToken);
 
-        progress.Report(new LogItem($"Listening for connections at port {port}.", LogItem.LogType.Info));
+        Log.Information("Listening for connections at port {TargetPort}.", Main.targetPort);
         Started = true;
     }
 
@@ -47,28 +39,28 @@ public sealed class WebSocketHostService(int port) : IReportingService
             return;
 
         var buffer = new Memory<byte>(args.Bytes);
-        var opCode = (WebSocketClientService.OpCode)buffer.Span[0];
+        var opCode = (PositionTransferClientService.OpCode)buffer.Span[0];
         buffer = buffer[1..];
 
         switch (opCode)
         {
-            case WebSocketClientService.OpCode.Identify:
+            case PositionTransferClientService.OpCode.Identify:
             {
                 var discordId = Encoding.ASCII.GetString(buffer.Span);
                 Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo
                 {
                     discordId = discordId,
-                    socketId  = args.Connection.ConnectionId
                 });
+                Log.Information("Client {DiscordId} connected.", discordId);
                 Task.Run(() => InitializePlayers(args));
                 break;
             }
-            case WebSocketClientService.OpCode.Update:
+            case PositionTransferClientService.OpCode.Update:
             {
                 if (!Clients.TryGetValue(args.Connection.ConnectionId, out var value))
                     return;
 
-                Task.Run(() => BroadcastPositionPacket(buffer, value.discordId));
+                Task.Run(() => BroadcastPositionPacket(args.Connection, buffer, value.discordId));
                 break;
             }
             default:
@@ -83,14 +75,13 @@ public sealed class WebSocketHostService(int port) : IReportingService
             if (!Clients.Remove(args.Connection.ConnectionId, out var info))
                 return;
 
+            Log.Information("Client {ValueDiscordId} disconnected.", info.discordId);
             Task.Run(() => BroadcastDisconnectPacket(info.discordId));
         }
     }
 
     private async Task InitializePlayers(WSMessageServerEventArgs args)
     {
-        PlayerTrackerService ??= Program.GetService<PlayerTrackerService>();
-
         using var ms = new MemoryStream();
         await using (var binaryWriter = new BinaryWriter(ms))
         {
@@ -98,12 +89,12 @@ public sealed class WebSocketHostService(int port) : IReportingService
 
             if (PlayerTrackerService != null && PlayerTrackerService.Clients.Count != 0)
             {
-                foreach (var client in PlayerTrackerService.Clients)
+                foreach (var client in PlayerTrackerService.Clients.Values)
                 {
                     binaryWriter.Write(Encoding.ASCII.GetBytes(DiscordUtility.GetFixedLengthUid(client.DiscordId)));
-                    binaryWriter.Write(client.X);
-                    binaryWriter.Write(client.Y);
-                    binaryWriter.Write(client.SurfaceIndex);
+                    binaryWriter.Write(client.Position.x);
+                    binaryWriter.Write(client.Position.y);
+                    binaryWriter.Write(client.Position.surfaceIndex);
                 }
             }
         }
@@ -111,7 +102,7 @@ public sealed class WebSocketHostService(int port) : IReportingService
         await WebsocketServer!.SendToConnectionAsync(ms.ToArray(), args.Connection);
     }
 
-    public async Task BroadcastPositionPacket(Memory<byte> data, string discordId)
+    public async Task BroadcastPositionPacket(ConnectionWSServer sender, Memory<byte> data, string discordId)
     {
         if (WebsocketServer == null)
             return;
@@ -125,7 +116,14 @@ public sealed class WebSocketHostService(int port) : IReportingService
         }
 
         var memory = ms.ToArray();
-        await WebsocketServer.BroadcastToAllConnectionsAsync(memory);
+
+        foreach (var connection in WebsocketServer.Connections)
+        {
+            if (connection == sender)
+                return;
+
+            await WebsocketServer.SendToConnectionAsync(memory, connection);
+        }
     }
 
     private async Task BroadcastDisconnectPacket(string discordId)
@@ -144,7 +142,7 @@ public sealed class WebSocketHostService(int port) : IReportingService
         await WebsocketServer.BroadcastToAllConnectionsAsync(memory);
     }
 
-    public async Task StopClient(IProgress<LogItem> progress, CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -155,14 +153,13 @@ public sealed class WebSocketHostService(int port) : IReportingService
         }
         catch (Exception e)
         {
-            progress.Report(new LogItem(e.Message, LogItem.LogType.Error, e.ToString()));
+            Log.Fatal(e, "Error terminating proximity audio host: {Message}", e.Message);
         }
     }
 
     public sealed class ClientConnectionInfo
     {
         public string discordId = string.Empty;
-        public string socketId  = string.Empty;
     }
 
     public enum OpCode : byte
