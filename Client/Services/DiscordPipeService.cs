@@ -1,4 +1,5 @@
-﻿using System.Net.Http.Json;
+﻿using System.Configuration;
+using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using Client.Models;
 using Dec.DiscordIPC;
@@ -11,9 +12,8 @@ namespace Client.Services;
 
 public sealed class DiscordPipeService : IService
 {
-    // TODO)) Replace with .env
-    ***REMOVED***
-    ***REMOVED***
+    private const string DiscordOAuthClientIdField     = "DiscordOAuthClientId";
+    private const string DiscordOAuthClientSecretField = "DiscordOAuthClientSecret";
 
     public  User?                      LocalUser      { get; set; }
     public  Dictionary<string, double> DefaultVolumes { get; set; } = new();
@@ -37,8 +37,15 @@ public sealed class DiscordPipeService : IService
     {
         if (DiscordPipe == null)
         {
+            if (string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientIdField]) ||
+                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientSecretField]))
+            {
+                Log.Error("Missing Discord OAuth Client ID or Secret.");
+                return false;
+            }
+
             Log.Information("Connecting to Discord...");
-            DiscordPipe = new DiscordIPC(ApplicationClientId);
+            DiscordPipe = new DiscordIPC(ConfigurationManager.AppSettings[DiscordOAuthClientIdField]);
             await DiscordPipe.InitAsync();
 
             string accessToken;
@@ -48,7 +55,7 @@ public sealed class DiscordPipeService : IService
                     new Authorize.Args
                     {
                         scopes    = ["rpc", "rpc.voice.read", "rpc.voice.write"],
-                        client_id = ApplicationClientId
+                        client_id = ConfigurationManager.AppSettings[DiscordOAuthClientIdField]
                     });
 
                 var oauth2 = await GetOAuth2Token(codeResponse.code);
@@ -162,8 +169,8 @@ public sealed class DiscordPipeService : IService
         var records = new List<KeyValuePair<string, string>>
         {
             new("grant_type", "authorization_code"),
-            new("client_id", ApplicationClientId),
-            new("client_secret", ApplicationClientSecret),
+            new("client_id", ConfigurationManager.AppSettings[DiscordOAuthClientIdField]         ?? string.Empty),
+            new("client_secret", ConfigurationManager.AppSettings[DiscordOAuthClientSecretField] ?? string.Empty),
             new("code", code),
             new("redirect_uri", "http://localhost/test")
         };

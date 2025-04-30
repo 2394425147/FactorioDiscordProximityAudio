@@ -1,6 +1,3 @@
-using System.ComponentModel.Design;
-using Client.Services;
-
 namespace Client;
 
 internal static class Program
@@ -18,6 +15,7 @@ internal static class Program
         // To customize application configuration such as set high DPI settings or default font,
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
+        Application.SetHighDpiMode(HighDpiMode.DpiUnawareGdiScaled);
         Application.Run(new Main());
     }
 }
