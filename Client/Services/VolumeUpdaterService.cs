@@ -61,29 +61,21 @@ public sealed class VolumeUpdaterService : IService
         if (localPosition.surfaceIndex != position.surfaceIndex)
             return 0;
 
-        const double falloffRadiusSqr = 100.0 * 100.0;
+        const double falloffRadius = 100.0;
 
-        var leftEarDistanceSqr = DistanceSqr(localPosition.x, localPosition.y, position.x, position.y);
-        return Proximity(leftEarDistanceSqr, falloffRadiusSqr) * 100f;
+        var leftEarDistance = Distance(localPosition.x, localPosition.y, position.x, position.y);
+        return Volume(leftEarDistance, falloffRadius);
     }
 
-    private static double DistanceSqr(double x1, double y1, double x2, double y2)
-    {
-        return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
-    }
+    private static double Distance(double x1, double y1, double x2, double y2) =>
+        Math.Sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
 
-    private static float Proximity(double leftEarDistanceSqr, double falloffRadiusSqr)
+    private static float Volume(double leftEarDistance, double falloffRadius)
     {
-        if (leftEarDistanceSqr > falloffRadiusSqr)
+        if (leftEarDistance > falloffRadius)
             return 0f;
 
-        var result = (float)(1 - leftEarDistanceSqr / falloffRadiusSqr);
-        return result;
-    }
-
-    public static float CalculateRawVolume(float proximity)
-    {
-
+        return (float)(1 - leftEarDistance / falloffRadius);
     }
 
     private void OnClientDisconnected(string discordId)
