@@ -1,16 +1,13 @@
-﻿using System.Text;
+﻿using System.Net.WebSockets;
+using System.Text;
 using Client.Models;
-using PHS.Networking.Enums;
 using Serilog;
-using WebsocketsSimple.Client;
-using WebsocketsSimple.Client.Events.Args;
-using WebsocketsSimple.Client.Models;
+using Websocket.Client;
 
 namespace Client.Services;
 
 public sealed class PositionTransferClientService : IService
 {
-    public  bool                        Started             { get; private set; }
     private FactorioFileWatcherService? FactorioFileWatcher { get; set; }
     private DiscordPipeService?         DiscordPipe         { get; set; }
     private WebsocketClient?            WebSocket           { get; set; }
@@ -22,7 +19,7 @@ public sealed class PositionTransferClientService : IService
 
     public delegate void OnAnyClientDisconnected(string discordId);
 
-    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    public async Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
         DiscordPipe         = services.GetService(typeof(DiscordPipeService)) as DiscordPipeService;
         FactorioFileWatcher = services.GetService(typeof(FactorioFileWatcherService)) as FactorioFileWatcherService;
@@ -32,27 +29,40 @@ public sealed class PositionTransferClientService : IService
         {
             Log.Information("Connecting to {TargetIp}:{TargetPort}...", Main.targetIp, Main.targetPort);
 
-            WebSocket                 =  new WebsocketClient(new ParamsWSClient(Main.targetIp, Main.targetPort, false));
-            WebSocket.ConnectionEvent += OnConnectionChanged;
-            WebSocket.MessageEvent    += OnMessageSentOrReceived;
-            await WebSocket.ConnectAsync(cancellationToken);
+            WebSocket                       = new WebsocketClient(new Uri($"ws://{Main.targetIp}:{Main.targetPort}"));
+            WebSocket.ErrorReconnectTimeout = TimeSpan.FromSeconds(3);
+            WebSocket.ReconnectionHappened.Subscribe(OnReconnectionHappened);
+            WebSocket.MessageReceived.Subscribe(OnMessageReceived);
+            WebSocket.DisconnectionHappened.Subscribe(OnDisconnectionHappened);
+            await WebSocket.Start();
 
             FactorioFileWatcher!.OnPositionUpdated += OnLocalPositionUpdated;
-            Log.Information("Connected to host.");
+            Log.Information("Started client.");
         }
         catch (Exception e)
         {
             Log.Fatal(e, "Error while connecting to proximity audio host: {Message}", e.Message);
-            throw;
+            return false;
         }
 
-        Started = true;
+        return true;
     }
 
-    private void OnConnectionChanged(object sender, WSConnectionClientEventArgs args)
+    private void OnReconnectionHappened(ReconnectionInfo info)
     {
-        if (args.ConnectionEventType != ConnectionEventType.Connected)
-            return;
+        switch (info.Type)
+        {
+            case ReconnectionType.Initial:
+            case ReconnectionType.Lost:
+            case ReconnectionType.NoMessageReceived:
+            case ReconnectionType.Error:
+            case ReconnectionType.ByUser:
+            case ReconnectionType.ByServer:
+                Log.Information("Connected to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException();
+        }
 
         if (DiscordPipe?.LocalUser == null)
         {
@@ -63,19 +73,62 @@ public sealed class PositionTransferClientService : IService
         Task.Run(() => SendIdentificationPacket(DiscordPipe.LocalUser.id));
     }
 
-    private void OnMessageSentOrReceived(object sender, WSMessageClientEventArgs args)
+    private async void OnDisconnectionHappened(DisconnectionInfo info)
     {
         try
         {
-            if (args.MessageEventType != MessageEventType.Receive)
-                return;
+            switch (info.Type)
+            {
+                case DisconnectionType.Exit:
+                    if (Main.useVerboseLogging)
+                        Log.Information("Disposed client websocket.");
+                    break;
+                case DisconnectionType.Lost:
+                    Log.Error("Lost connection to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
+                    break;
+                case DisconnectionType.NoMessageReceived:
+                    Log.Warning("Lost connection to {TargetIp}:{TargetPort} due to no message received.",
+                                Main.targetIp, Main.targetPort);
+                    break;
+                case DisconnectionType.Error:
+                    Log.Error("Error while connecting to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
+                    break;
+                case DisconnectionType.ByUser:
+                    if (Main.useVerboseLogging)
+                        Log.Information("Disconnected from {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
+                    break;
+                case DisconnectionType.ByServer:
+                    Log.Information("Proximity audio host closed connection.");
+                    await WebSocket!.Stop(WebSocketCloseStatus.NormalClosure, "Closing connection.");
+                    WebSocket?.Dispose();
+                    WebSocket = null;
+                    await Main.servicesMarshal.StopAsync();
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Fatal(e, "Error while disconnecting from proximity audio host: {Message}", e.Message);
+        }
+    }
 
-            var buffer = new Memory<byte>(args.Bytes);
+    private void OnMessageReceived(ResponseMessage response)
+    {
+        try
+        {
+            var buffer = new Memory<byte>(response.Binary);
             var opCode = (PositionTransferHostService.OpCode)buffer.Span[0];
             buffer = buffer[1..];
 
             switch (opCode)
             {
+                case PositionTransferHostService.OpCode.Ping:
+                {
+                    SendPongPacket();
+                    break;
+                }
                 case PositionTransferHostService.OpCode.InitPlayers:
                 {
                     while (buffer.Length > 0)
@@ -132,6 +185,13 @@ public sealed class PositionTransferClientService : IService
         }
     }
 
+    private void SendPongPacket()
+    {
+        WebSocket?.Send([(byte)OpCode.Pong]);
+        if (Main.useVerboseLogging)
+            Log.Information("Sent pong to proximity audio host.");
+    }
+
     private async Task SendIdentificationPacket(string discordId)
     {
         try
@@ -143,7 +203,7 @@ public sealed class PositionTransferClientService : IService
                 binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
             }
 
-            await WebSocket!.SendAsync(ms.ToArray());
+            WebSocket!.Send(ms.ToArray());
         }
         catch (Exception e)
         {
@@ -156,6 +216,9 @@ public sealed class PositionTransferClientService : IService
         try
         {
             await SendPositionPacket(obj);
+            if (Main.useVerboseLogging)
+                Log.Information("Sent position of ({X:F2},{Y:F2},{Surface}) to proximity audio host.",
+                                obj.x, obj.y, obj.surfaceIndex);
         }
         catch (Exception e)
         {
@@ -179,7 +242,7 @@ public sealed class PositionTransferClientService : IService
                 binaryWriter.Write(obj.surfaceIndex);
             }
 
-            await WebSocket.SendAsync(ms.ToArray());
+            WebSocket.Send(ms.ToArray());
         }
         catch (Exception e)
         {
@@ -195,19 +258,25 @@ public sealed class PositionTransferClientService : IService
         try
         {
             if (WebSocket != null)
-                await WebSocket.DisconnectAsync(cancellationToken: cancellationToken);
-            WebSocket?.Dispose();
-            Started = false;
+            {
+                if (WebSocket.IsRunning)
+                    await WebSocket.StopOrFail(WebSocketCloseStatus.NormalClosure, "Closing connection.");
+
+                WebSocket.Dispose();
+            }
+
+            Log.Information("Terminated proximity audio client.");
         }
         catch (Exception e)
         {
-            Log.Error(e.Message);
+            Log.Error(e, "Error disconnecting from proximity audio host: {Message}", e.Message);
         }
     }
 
     public enum OpCode : byte
     {
-        Identify,
-        Update
+        Pong     = 200,
+        Identify = 201,
+        Update   = 202
     }
 }

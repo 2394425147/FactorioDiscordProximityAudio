@@ -14,7 +14,6 @@ public sealed class DiscordPipeService : IService
     ***REMOVED***
     ***REMOVED***
 
-    public  bool                      Started        { get; private set; }
     public  User?                     LocalUser      { get; set; }
     public  Dictionary<string, float> DefaultVolumes { get; set; } = new();
     private DiscordIPC?               DiscordPipe    { get; set; }
@@ -33,10 +32,8 @@ public sealed class DiscordPipeService : IService
         HttpClient.BaseAddress = new Uri("https://discord.com/");
     }
 
-    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    public async Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        Started = false;
-
         if (DiscordPipe == null)
         {
             Log.Information("Connecting to Discord...");
@@ -57,7 +54,7 @@ public sealed class DiscordPipeService : IService
                 if (oauth2 == null)
                 {
                     Log.Error("Failed to get OAuth2 token. Make sure you have a stable internet connection.");
-                    return;
+                    return false;
                 }
 
                 accessToken = oauth2.access_token;
@@ -65,7 +62,7 @@ public sealed class DiscordPipeService : IService
             catch (ErrorResponseException)
             {
                 Log.Error("Authorization denied.");
-                return;
+                return false;
             }
 
             try
@@ -93,11 +90,11 @@ public sealed class DiscordPipeService : IService
             catch (Exception e)
             {
                 Log.Fatal(e, "Error initializing Discord IPC: {Message}", e.Message);
-                throw;
+                return false;
             }
         }
 
-        Started = true;
+        return true;
     }
 
     private void SetVoiceMembers(List<VoiceStateCreate.Data> voiceStates)
@@ -123,7 +120,7 @@ public sealed class DiscordPipeService : IService
 
                 Log.Information($"Left Discord voice channel.");
                 foreach (var (discordId, volume) in DefaultVolumes)
-                    await SetUserVoiceSettings(discordId, volume);
+                    await SetUserVolume(discordId, volume);
                 DefaultVolumes.Clear();
                 DiscordPipe!.OnVoiceStateCreate -= OnVoiceStateCreate;
                 await DiscordPipe.UnsubscribeAsync(new VoiceStateCreate.Args { channel_id = CurrentVoiceChannel });
@@ -181,31 +178,67 @@ public sealed class DiscordPipeService : IService
         return httpAuthentication;
     }
 
-    public async Task SetUserVoiceSettings(string discordId, float? volume)
+    public async Task SetUserVolume(string discordId, float volume)
     {
-        if (DiscordPipe == null)
-            return;
-
-        if (!DefaultVolumes.TryGetValue(discordId, out var defaultVolume))
-            return;
-
-        volume ??= defaultVolume;
-        volume *=  0.01f;
-
-        var args = new SetUserVoiceSettings.Args
+        try
         {
-            user_id = discordId,
-            volume  = defaultVolume * volume
-        };
+            if (DiscordPipe == null)
+                return;
 
-        // If this doesn't work, change L64 on LowLevelDiscordIPC.cs to use nonce from new parameter
-        Log.Information("Set {DiscordId} volume to {Volume}.", discordId, args.volume);
-        await DiscordPipe.SendCommandAsync(args);
+            if (!DefaultVolumes.TryGetValue(discordId, out var defaultVolume))
+                return;
+
+            volume *= 0.01f;
+
+            var args = new SetUserVoiceSettings.Args
+            {
+                user_id = discordId,
+                volume  = defaultVolume * volume
+            };
+
+            // If this doesn't work, change L64 on LowLevelDiscordIPC.cs to use nonce from new parameter
+            if (Main.useVerboseLogging)
+                Log.Information("Set {DiscordId} volume to {Volume}.", discordId, args.volume);
+            await DiscordPipe.SendCommandAsync(args);
+        }
+        catch (Exception e)
+        {
+            Log.Fatal(e, "Error while setting voice settings: {Message}", e.Message);
+        }
+    }
+
+    public async Task ResetUserVolume(string discordId)
+    {
+        try
+        {
+            if (DiscordPipe == null)
+                return;
+
+            if (!DefaultVolumes.TryGetValue(discordId, out var defaultVolume))
+                return;
+
+            var args = new SetUserVoiceSettings.Args
+            {
+                user_id = discordId,
+                volume  = defaultVolume
+            };
+
+            Log.Information("Reset {DiscordId} volume to {Volume}.", discordId, args.volume);
+            await DiscordPipe.SendCommandAsync(args);
+        }
+        catch (Exception e)
+        {
+            Log.Fatal(e, "Error while resetting voice settings: {Message}", e.Message);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        Started = false;
+        DefaultVolumes.Clear();
+        DiscordPipe?.Dispose();
+        DiscordPipe = null;
+
+        Log.Information("Terminated Discord IPC.");
         return Task.CompletedTask;
     }
 }

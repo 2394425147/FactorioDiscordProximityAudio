@@ -1,17 +1,17 @@
 ﻿using Client.Models;
+using Serilog;
 
 namespace Client.Services;
 
-public sealed class PlayerTrackerService : IService
+public sealed class VolumeUpdaterService : IService
 {
-    public bool                               Started { get; private set; }
     public Dictionary<string, ClientPosition> Clients { get; } = [];
 
     private DiscordPipeService?            DiscordPipe            { get; set; }
     private PositionTransferClientService? PositionTransferClient { get; set; }
     public  FactorioFileWatcherService?    FactorioFileWatcher    { get; set; }
 
-    public Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    public Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
         DiscordPipe            = services.GetService(typeof(DiscordPipeService)) as DiscordPipeService;
         PositionTransferClient = services.GetService(typeof(PositionTransferClientService)) as PositionTransferClientService;
@@ -28,8 +28,8 @@ public sealed class PlayerTrackerService : IService
             FactorioFileWatcher.OnPositionUpdated += OnLocalPositionUpdated;
         }
 
-        Started = true;
-        return Task.CompletedTask;
+        Log.Information("Started volume updater.");
+        return Task.FromResult(true);
     }
 
     private void OnClientUpdateReceived(string discordId, FactorioPosition position)
@@ -44,7 +44,7 @@ public sealed class PlayerTrackerService : IService
             return;
 
         var volume = CalculateVolume(FactorioFileWatcher.LastPositionPacket.Value, position);
-        DiscordPipe?.SetUserVoiceSettings(discordId, volume);
+        DiscordPipe?.SetUserVolume(discordId, volume);
     }
 
     private void OnLocalPositionUpdated(FactorioPosition obj)
@@ -52,7 +52,7 @@ public sealed class PlayerTrackerService : IService
         foreach (var client in Clients.Values)
         {
             var volume = CalculateVolume(obj, client.Position);
-            DiscordPipe?.SetUserVoiceSettings(client.DiscordId, volume);
+            DiscordPipe?.SetUserVolume(client.DiscordId, volume);
         }
     }
 
@@ -81,23 +81,43 @@ public sealed class PlayerTrackerService : IService
         return result;
     }
 
+    public static float CalculateRawVolume(float proximity)
+    {
+
+    }
+
     private void OnClientDisconnected(string discordId)
     {
         if (!Clients.Remove(discordId))
             return;
 
-        DiscordPipe?.SetUserVoiceSettings(discordId, null);
+        DiscordPipe?.ResetUserVolume(discordId);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (PositionTransferClient != null)
+        try
         {
-            PositionTransferClient.AnyClientUpdateReceived -= OnClientUpdateReceived;
-            PositionTransferClient.AnyClientDisconnected   -= OnClientDisconnected;
-        }
+            if (PositionTransferClient != null)
+            {
+                PositionTransferClient.AnyClientUpdateReceived -= OnClientUpdateReceived;
+                PositionTransferClient.AnyClientDisconnected   -= OnClientDisconnected;
+            }
 
-        Started = false;
-        return Task.CompletedTask;
+            if (DiscordPipe != null)
+            {
+                foreach (var client in Clients)
+                {
+                    await DiscordPipe.ResetUserVolume(client.Key);
+                }
+            }
+
+            Log.Information("Terminated volume updater.");
+        }
+        catch (Exception e)
+        {
+            Log.Fatal(e, "Error terminating volume updater: {Message}", e.Message);
+            throw;
+        }
     }
 }

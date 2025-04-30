@@ -5,38 +5,38 @@ namespace Client.Services;
 
 public sealed class FactorioFileWatcherService : IService
 {
-    public bool                            Started { get; private set; }
     public event Action<FactorioPosition>? OnPositionUpdated;
     public FactorioPosition?               LastPositionPacket { get; private set; }
 
-    private string?            TargetFolderFullPath { get; set; }
-    private string?            TargetFileFullPath   { get; set; }
+    private string             TargetFolderFullPath { get; set; }
+    private string             TargetFileFullPath   { get; set; }
     private FileSystemWatcher? FileSystemWatcher    { get; set; }
 
     private const string TargetFileName = "fdpa-comm";
 
-    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    public FactorioFileWatcherService()
+    {
+        TargetFolderFullPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                            "Factorio", "script-output");
+        TargetFileFullPath = Path.Combine(TargetFolderFullPath, TargetFileName);
+    }
+
+    public async Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
         try
         {
-            TargetFolderFullPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                                                "Factorio", "script-output");
-            TargetFileFullPath = Path.Combine(TargetFolderFullPath, TargetFileName);
-
-            var fileStream = File.Open(TargetFileFullPath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
-
-            if (!fileStream.CanRead)
-            {
-                Log.Error("Factorio communicator file is readonly.");
-                return;
-            }
-
-            await fileStream.DisposeAsync();
-
-            Log.Information("Watching: {S}...", TargetFileFullPath);
-
             if (FileSystemWatcher == null)
             {
+                var fileStream = File.Open(TargetFileFullPath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
+
+                if (!fileStream.CanRead)
+                {
+                    Log.Error("Factorio communicator file is readonly.");
+                    return false;
+                }
+
+                await fileStream.DisposeAsync();
+
                 FileSystemWatcher = new FileSystemWatcher(TargetFolderFullPath, TargetFileName)
                 {
                     IncludeSubdirectories = false,
@@ -45,15 +45,17 @@ public sealed class FactorioFileWatcherService : IService
                 };
 
                 FileSystemWatcher.Changed += OnFileSystemChanged;
+                Log.Information("Monitoring {S}.", TargetFileFullPath);
             }
 
-            Started = true;
         }
         catch (Exception e)
         {
             Log.Fatal(e, "Error while starting Factorio file watcher: {Message}", e.Message);
-            throw;
+            return false;
         }
+
+        return true;
     }
 
     private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
@@ -61,7 +63,7 @@ public sealed class FactorioFileWatcherService : IService
         if (e.ChangeType != WatcherChangeTypes.Changed)
             return;
 
-        if (TargetFileFullPath == null || !File.Exists(TargetFileFullPath))
+        if (!File.Exists(TargetFileFullPath))
             return;
 
         try
@@ -105,7 +107,7 @@ public sealed class FactorioFileWatcherService : IService
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        Started = false;
+        Log.Information("Terminated Factorio file watcher.");
         return Task.CompletedTask;
     }
 }

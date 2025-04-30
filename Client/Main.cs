@@ -1,3 +1,4 @@
+using System.ComponentModel.Design;
 using System.Net.NetworkInformation;
 using Client.Services;
 using Client.VisualComponents;
@@ -7,17 +8,27 @@ namespace Client;
 
 public sealed partial class Main : Form
 {
+    public static           ServicesMarshal  servicesMarshal  = null!;
+    private static readonly ServiceContainer ServiceContainer = new();
+
     public static string? targetIp;
     public static int     targetPort;
+    public static bool    useVerboseLogging;
 
-    private readonly ServicesMarshal _servicesMarshal;
-    private          string          _connectButtonText = string.Empty;
-    private          bool            _hasConnection;
+    private string _connectButtonText = string.Empty;
+    private bool   _hasConnection;
 
-    public Main(ServicesMarshal servicesMarshal)
+    public Main()
     {
-        _servicesMarshal = servicesMarshal;
         InitializeComponent();
+
+        ServiceContainer.AddService(typeof(FactorioFileWatcherService),    new FactorioFileWatcherService());
+        ServiceContainer.AddService(typeof(DiscordPipeService),            new DiscordPipeService());
+        ServiceContainer.AddService(typeof(PositionTransferClientService), new PositionTransferClientService());
+        ServiceContainer.AddService(typeof(PositionTransferHostService),   new PositionTransferHostService());
+        ServiceContainer.AddService(typeof(VolumeUpdaterService),          new VolumeUpdaterService());
+
+        servicesMarshal = new ServicesMarshal(ServiceContainer);
     }
 
     private void Main_Load(object sender, EventArgs e)
@@ -37,19 +48,40 @@ public sealed partial class Main : Form
 
         toolTip1.SetToolTip(isHost,   "Host to manage player positions. A client connection will also be made.");
         toolTip1.SetToolTip(isClient, "Connect to a host to send and receive player positions.");
+
+        servicesMarshal.OnStarted = () =>
+        {
+            if (connectButton.InvokeRequired)
+                connectButton.Invoke(OnConnectionComplete);
+            else
+                OnConnectionComplete();
+        };
+
+        servicesMarshal.OnStopped = () =>
+        {
+            if (connectButton.InvokeRequired)
+                connectButton.Invoke(OnConnectionCancelled);
+            else
+                OnConnectionCancelled();
+        };
     }
 
     private async void connectButton_Click(object sender, EventArgs e)
     {
-        var hadConnection = _hasConnection;
-        _hasConnection = !_hasConnection;
+        try
+        {
+            var hadConnection = _hasConnection;
+            _hasConnection = !_hasConnection;
 
-        if (hadConnection)
-            await DisconnectServices();
-        else
-            await ConnectServices();
-
-        ipTextbox.Enabled = portTextbox.Enabled = isClient.Enabled = isHost.Enabled = !_hasConnection;
+            if (hadConnection)
+                await DisconnectServices();
+            else
+                await ConnectServices();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error connecting/disconnecting: {Message}", ex.Message);
+        }
     }
 
     private async Task ConnectServices()
@@ -61,7 +93,10 @@ public sealed partial class Main : Form
             : TryValidateClientWebSocketDestination(out targetIp, out targetPort);
 
         if (!isDestinationValid)
+        {
+            OnConnectionCancelled();
             return;
+        }
 
         ipTextbox.Text   = targetIp;
         portTextbox.Text = targetPort.ToString();
@@ -69,50 +104,43 @@ public sealed partial class Main : Form
         connectButton.Text    = "Connecting...";
         connectButton.Enabled = false;
 
-        if (!isDestinationValid)
-        {
-            CancelConnection();
-            return;
-        }
-
         Type[][] serviceTypes = isHost.Checked
             ?
             [
                 [typeof(DiscordPipeService), typeof(FactorioFileWatcherService)],
                 [typeof(PositionTransferHostService)],
                 [typeof(PositionTransferClientService)],
-                [typeof(PlayerTrackerService)]
+                [typeof(VolumeUpdaterService)]
             ]
             :
             [
                 [typeof(DiscordPipeService), typeof(FactorioFileWatcherService)],
                 [typeof(PositionTransferClientService)],
-                [typeof(PlayerTrackerService)]
+                [typeof(VolumeUpdaterService)]
             ];
 
-        var task = _servicesMarshal.StartAsync(serviceTypes, Program.ApplicationExitCancellationToken);
+        await servicesMarshal.StartAsync(serviceTypes, Program.ApplicationExitCancellationToken);
+    }
 
-        await Task.WhenAny(task.ContinueWith(_ => CompleteConnection(), Program.ApplicationExitCancellationToken,
-                                             TaskContinuationOptions.OnlyOnRanToCompletion,
-                                             TaskScheduler.FromCurrentSynchronizationContext()),
-                           task.ContinueWith(_ => CancelConnection(), Program.ApplicationExitCancellationToken,
-                                             TaskContinuationOptions.OnlyOnFaulted,
-                                             TaskScheduler.FromCurrentSynchronizationContext()));
-        return;
+    private void OnConnectionComplete()
+    {
+        connectButton.Text    = "Disconnect";
+        connectButton.Enabled = true;
+        ipTextbox.Enabled     = portTextbox.Enabled = isClient.Enabled = isHost.Enabled = !_hasConnection;
+    }
 
-        void CompleteConnection()
-        {
-            connectButton.Text    = "Disconnect";
-            connectButton.Enabled = true;
-        }
+    private void OnConnectionCancelled()
+    {
+        connectButton.Text    = _connectButtonText;
+        connectButton.Enabled = true;
+        _hasConnection        = false;
+        ipTextbox.Enabled     = portTextbox.Enabled = isClient.Enabled = isHost.Enabled = !_hasConnection;
+    }
 
-        void CancelConnection()
-        {
-            connectButton.Text    = _connectButtonText;
-            connectButton.Enabled = true;
-            _hasConnection        = false;
-            ipTextbox.Enabled     = portTextbox.Enabled = isClient.Enabled = isHost.Enabled = !_hasConnection;
-        }
+    private async Task DisconnectServices()
+    {
+        connectButton.Text = "Disconnecting...";
+        await servicesMarshal.StopAsync();
     }
 
     private bool TryValidateHostWebSocketDestination(out string address, out int port)
@@ -178,24 +206,6 @@ public sealed partial class Main : Form
         return true;
     }
 
-    private async Task DisconnectServices()
-    {
-        connectButton.Text = "Disconnecting...";
-
-        await _servicesMarshal.StopAsync()
-                              .ContinueWith(_ => CompleteDisconnection(), Program.ApplicationExitCancellationToken,
-                                            TaskContinuationOptions.OnlyOnRanToCompletion,
-                                            TaskScheduler.FromCurrentSynchronizationContext());
-        return;
-
-        void CompleteDisconnection()
-        {
-            connectButton.Text    = _connectButtonText;
-            _hasConnection        = false;
-            connectButton.Enabled = true;
-        }
-    }
-
     private void isClient_CheckedChanged(object sender, EventArgs e)
     {
         if (!isClient.Checked)
@@ -234,5 +244,31 @@ public sealed partial class Main : Form
 
         ipTextbox.Text = ipTextbox.Text[..^1];
         portTextbox.Focus();
+    }
+
+    private void verboseLogging_CheckedChanged(object sender, EventArgs e)
+    {
+        useVerboseLogging = verboseLogging.Checked;
+    }
+
+    private async void Main_FormClosing(object sender, FormClosingEventArgs e)
+    {
+        try
+        {
+            if (e.CloseReason == CloseReason.UserClosing)
+                e.Cancel = true;
+
+            await servicesMarshal.StopAsync();
+            ServiceContainer.Dispose();
+            await Program.ApplicationExitCancellationTokenSource.CancelAsync();
+        }
+        catch (Exception)
+        {
+            // ignored
+        }
+        finally
+        {
+            Application.Exit();
+        }
     }
 }

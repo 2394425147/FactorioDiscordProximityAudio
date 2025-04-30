@@ -11,7 +11,7 @@
     <ItemGroup>
       <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
       <PackageReference Include="Serilog.Sinks.RichTextBox.WinForms.Colored" Version="2.1.0" />
-      <PackageReference Include="WebsocketsSimple.Client" Version="7.0.9" />
+      <PackageReference Include="Websocket.Client" Version="5.1.2" />
       <PackageReference Include="WebsocketsSimple.Server" Version="7.0.9" />
     </ItemGroup>
 

@@ -44,6 +44,7 @@ sealed partial class Main
         ipTextbox = new PastableTextBox();
         portTextbox = new PastableTextBox();
         logTextbox = new RichTextBox();
+        verboseLogging = new CheckBox();
         panel1.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)clientPositionBindingSource).BeginInit();
         SuspendLayout();
@@ -51,9 +52,9 @@ sealed partial class Main
         // label1
         // 
         label1.AutoSize = true;
-        label1.Location = new Point(12, 15);
+        label1.Location = new Point(12, 14);
         label1.Name = "label1";
-        label1.Size = new Size(17, 15);
+        label1.Size = new Size(21, 14);
         label1.TabIndex = 1;
         label1.Text = "IP";
         label1.TextAlign = ContentAlignment.MiddleLeft;
@@ -62,9 +63,9 @@ sealed partial class Main
         // 
         label2.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         label2.AutoSize = true;
-        label2.Location = new Point(337, 15);
+        label2.Location = new Point(341, 14);
         label2.Name = "label2";
-        label2.Size = new Size(29, 15);
+        label2.Size = new Size(35, 14);
         label2.TabIndex = 2;
         label2.Text = "Port";
         label2.TextAlign = ContentAlignment.MiddleLeft;
@@ -72,9 +73,9 @@ sealed partial class Main
         // connectButton
         // 
         connectButton.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        connectButton.Location = new Point(12, 41);
+        connectButton.Location = new Point(149, 38);
         connectButton.Name = "connectButton";
-        connectButton.Size = new Size(544, 33);
+        connectButton.Size = new Size(407, 31);
         connectButton.TabIndex = 4;
         connectButton.Text = "Connect";
         connectButton.UseVisualStyleBackColor = true;
@@ -85,7 +86,7 @@ sealed partial class Main
         isClient.AutoSize = true;
         isClient.Location = new Point(59, 3);
         isClient.Name = "isClient";
-        isClient.Size = new Size(55, 19);
+        isClient.Size = new Size(67, 18);
         isClient.TabIndex = 7;
         isClient.Text = "Client";
         isClient.UseVisualStyleBackColor = true;
@@ -96,7 +97,7 @@ sealed partial class Main
         isHost.AutoSize = true;
         isHost.Location = new Point(3, 3);
         isHost.Name = "isHost";
-        isHost.Size = new Size(50, 19);
+        isHost.Size = new Size(53, 18);
         isHost.TabIndex = 7;
         isHost.Text = "Host";
         isHost.UseVisualStyleBackColor = true;
@@ -107,9 +108,9 @@ sealed partial class Main
         panel1.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         panel1.Controls.Add(isHost);
         panel1.Controls.Add(isClient);
-        panel1.Location = new Point(439, 12);
+        panel1.Location = new Point(430, 11);
         panel1.Name = "panel1";
-        panel1.Size = new Size(117, 25);
+        panel1.Size = new Size(126, 23);
         panel1.TabIndex = 8;
         // 
         // clientPositionBindingSource
@@ -119,9 +120,9 @@ sealed partial class Main
         // ipTextbox
         // 
         ipTextbox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        ipTextbox.Location = new Point(35, 12);
+        ipTextbox.Location = new Point(39, 11);
         ipTextbox.Name = "ipTextbox";
-        ipTextbox.Size = new Size(296, 23);
+        ipTextbox.Size = new Size(296, 22);
         ipTextbox.TabIndex = 11;
         ipTextbox.Pasted += AddressPasted;
         ipTextbox.TextChanged += OnIPTextChanged;
@@ -129,29 +130,43 @@ sealed partial class Main
         // portTextbox
         // 
         portTextbox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        portTextbox.Location = new Point(372, 12);
+        portTextbox.Location = new Point(382, 11);
         portTextbox.Name = "portTextbox";
-        portTextbox.Size = new Size(61, 23);
+        portTextbox.Size = new Size(42, 22);
         portTextbox.TabIndex = 12;
+        portTextbox.Text = "00000";
         portTextbox.Pasted += AddressPasted;
         // 
         // logTextbox
         // 
         logTextbox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         logTextbox.BackColor = Color.Black;
-        logTextbox.Location = new Point(12, 80);
+        logTextbox.Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
+        logTextbox.Location = new Point(12, 75);
         logTextbox.Name = "logTextbox";
         logTextbox.ReadOnly = true;
         logTextbox.ScrollBars = RichTextBoxScrollBars.ForcedVertical;
-        logTextbox.Size = new Size(544, 356);
+        logTextbox.Size = new Size(544, 333);
         logTextbox.TabIndex = 13;
         logTextbox.Text = "";
         // 
+        // verboseLogging
+        // 
+        verboseLogging.AutoSize = true;
+        verboseLogging.Location = new Point(12, 45);
+        verboseLogging.Name = "verboseLogging";
+        verboseLogging.Size = new Size(131, 18);
+        verboseLogging.TabIndex = 14;
+        verboseLogging.Text = "Verbose logging";
+        verboseLogging.UseVisualStyleBackColor = true;
+        verboseLogging.CheckedChanged += verboseLogging_CheckedChanged;
+        // 
         // Main
         // 
-        AutoScaleDimensions = new SizeF(7F, 15F);
+        AutoScaleDimensions = new SizeF(7F, 14F);
         AutoScaleMode = AutoScaleMode.Font;
-        ClientSize = new Size(568, 448);
+        ClientSize = new Size(568, 418);
+        Controls.Add(verboseLogging);
         Controls.Add(logTextbox);
         Controls.Add(portTextbox);
         Controls.Add(ipTextbox);
@@ -160,9 +175,11 @@ sealed partial class Main
         Controls.Add(label1);
         Controls.Add(connectButton);
         DoubleBuffered = true;
-        MinimumSize = new Size(384, 256);
+        Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
+        MinimumSize = new Size(384, 242);
         Name = "Main";
         Text = "Factorio Discord Proximity Audio";
+        FormClosing += Main_FormClosing;
         Load += Main_Load;
         panel1.ResumeLayout(false);
         panel1.PerformLayout();
@@ -183,4 +200,5 @@ sealed partial class Main
     private PastableTextBox ipTextbox;
     private PastableTextBox portTextbox;
     private RichTextBox logTextbox;
+    private CheckBox verboseLogging;
 }

@@ -12,28 +12,80 @@ public sealed class PositionTransferHostService : IService
     public const int StartingPort   = 8970;
     public const int CheckPortCount = 1029;
 
-    public bool Started { get; private set; }
+    private bool ShuttingDown { get; set; }
 
-    private WebsocketServer?                         WebsocketServer      { get; set; }
-    private PlayerTrackerService?                    PlayerTrackerService { get; set; }
+    private WebsocketServer?                         Host                 { get; set; }
+    private VolumeUpdaterService?                    PlayerTrackerService { get; set; }
     private Dictionary<string, ClientConnectionInfo> Clients              { get; } = [];
 
-    public async Task StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    public async Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        PlayerTrackerService = services.GetService(typeof(PlayerTrackerService)) as PlayerTrackerService;
+        try
+        {
+            PlayerTrackerService = services.GetService(typeof(VolumeUpdaterService)) as VolumeUpdaterService;
 
-        Log.Information("Opening websocket...");
+            Log.Information("Opening websocket...");
 
-        WebsocketServer                 =  new WebsocketServer(new ParamsWSServer(Main.targetPort));
-        WebsocketServer.MessageEvent    += OnMessageSentOrReceived;
-        WebsocketServer.ConnectionEvent += OnClientConnectionChanged;
-        await WebsocketServer.StartAsync(cancellationToken);
+            Host = new WebsocketServer(new ParamsWSServer(Main.targetPort, onlyEmitBytes: true));
 
-        Log.Information("Listening for connections at port {TargetPort}.", Main.targetPort);
-        Started = true;
+            Host.ConnectionEvent += OnClientConnectionChanged;
+            Host.MessageEvent    += OnMessageReceived;
+
+            await Host.StartAsync(cancellationToken);
+            Log.Information("Listening for connections at port {TargetPort}.", Main.targetPort);
+        }
+        catch (Exception e)
+        {
+            Log.Fatal(e, "Error opening websocket: {Message}", e.Message);
+            return false;
+        }
+
+        return true;
     }
 
-    private void OnMessageSentOrReceived(object sender, WSMessageServerEventArgs args)
+    private void OnClientConnectionChanged(object sender, WSConnectionServerEventArgs args)
+    {
+        switch (args.ConnectionEventType)
+        {
+            case ConnectionEventType.Connected:
+                Task.Run(() => OnPong(args.Connection));
+                break;
+            case ConnectionEventType.Disconnect:
+            {
+                if (!Clients.Remove(args.Connection.ConnectionId, out var info))
+                    return;
+
+                if (ShuttingDown)
+                    return;
+
+                Log.Information("Client {ValueDiscordId} disconnected.", info.discordId);
+                Task.Run(() => BroadcastClientDisconnectPacket(info.discordId));
+                break;
+            }
+        }
+    }
+
+    private async void OnPong(ConnectionWSServer connection)
+    {
+        try
+        {
+            if (Main.useVerboseLogging && Clients.TryGetValue(connection.ConnectionId, out var client))
+                Log.Information("Pong from {DiscordID}.", client.discordId);
+
+            await Task.Delay(TimeSpan.FromSeconds(15));
+
+            if (Host is not { IsServerRunning: true })
+                return;
+
+            await Host.SendToConnectionAsync([(byte)OpCode.Ping], connection);
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, "Error pinging client: {Message}", e.Message);
+        }
+    }
+
+    private void OnMessageReceived(object sender, WSMessageServerEventArgs args)
     {
         if (args.MessageEventType != MessageEventType.Receive)
             return;
@@ -44,15 +96,15 @@ public sealed class PositionTransferHostService : IService
 
         switch (opCode)
         {
+            case PositionTransferClientService.OpCode.Pong:
+                Task.Run(() => OnPong(args.Connection));
+                break;
             case PositionTransferClientService.OpCode.Identify:
             {
                 var discordId = Encoding.ASCII.GetString(buffer.Span);
-                Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo
-                {
-                    discordId = discordId,
-                });
+                Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo(args.Connection, discordId));
                 Log.Information("Client {DiscordId} connected.", discordId);
-                Task.Run(() => InitializePlayers(args));
+                Task.Run(() => InitializePlayers(discordId, args.Connection));
                 break;
             }
             case PositionTransferClientService.OpCode.Update:
@@ -63,24 +115,10 @@ public sealed class PositionTransferHostService : IService
                 Task.Run(() => BroadcastPositionPacket(args.Connection, buffer, value.discordId));
                 break;
             }
-            default:
-                throw new ArgumentOutOfRangeException(nameof(opCode), opCode, null);
         }
     }
 
-    private void OnClientConnectionChanged(object sender, WSConnectionServerEventArgs args)
-    {
-        if (args.ConnectionEventType == ConnectionEventType.Disconnect)
-        {
-            if (!Clients.Remove(args.Connection.ConnectionId, out var info))
-                return;
-
-            Log.Information("Client {ValueDiscordId} disconnected.", info.discordId);
-            Task.Run(() => BroadcastDisconnectPacket(info.discordId));
-        }
-    }
-
-    private async Task InitializePlayers(WSMessageServerEventArgs args)
+    private async Task InitializePlayers(string discordId, ConnectionWSServer connection)
     {
         using var ms = new MemoryStream();
         await using (var binaryWriter = new BinaryWriter(ms))
@@ -88,23 +126,25 @@ public sealed class PositionTransferHostService : IService
             binaryWriter.Write((byte)OpCode.InitPlayers);
 
             if (PlayerTrackerService != null && PlayerTrackerService.Clients.Count != 0)
-            {
                 foreach (var client in PlayerTrackerService.Clients.Values)
                 {
+                    if (client.DiscordId == discordId)
+                        continue;
+
                     binaryWriter.Write(Encoding.ASCII.GetBytes(DiscordUtility.GetFixedLengthUid(client.DiscordId)));
                     binaryWriter.Write(client.Position.x);
                     binaryWriter.Write(client.Position.y);
                     binaryWriter.Write(client.Position.surfaceIndex);
                 }
-            }
         }
 
-        await WebsocketServer!.SendToConnectionAsync(ms.ToArray(), args.Connection);
+        if (Host != null)
+            await Host.SendToConnectionAsync(ms.ToArray(), connection);
     }
 
-    public async Task BroadcastPositionPacket(ConnectionWSServer sender, Memory<byte> data, string discordId)
+    public async Task BroadcastPositionPacket(ConnectionWSServer connection, Memory<byte> data, string discordId)
     {
-        if (WebsocketServer == null)
+        if (Host == null)
             return;
 
         using var ms = new MemoryStream();
@@ -117,18 +157,18 @@ public sealed class PositionTransferHostService : IService
 
         var memory = ms.ToArray();
 
-        foreach (var connection in WebsocketServer.Connections)
+        foreach (var clients in Clients.Values)
         {
-            if (connection == sender)
-                return;
+            if (clients.connection == connection)
+                continue;
 
-            await WebsocketServer.SendToConnectionAsync(memory, connection);
+            await Host.SendToConnectionAsync(memory, connection);
         }
     }
 
-    private async Task BroadcastDisconnectPacket(string discordId)
+    private async Task BroadcastClientDisconnectPacket(string discordId)
     {
-        if (WebsocketServer == null)
+        if (Host == null)
             return;
 
         using var ms = new MemoryStream();
@@ -138,34 +178,44 @@ public sealed class PositionTransferHostService : IService
             binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
         }
 
-        var memory = ms.ToArray();
-        await WebsocketServer.BroadcastToAllConnectionsAsync(memory);
+        await Host.BroadcastToAllConnectionsAsync(ms.ToArray());
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         try
         {
-            Clients.Clear();
-            await WebsocketServer!.StopAsync(cancellationToken);
-            WebsocketServer.Dispose();
-            Started = false;
+            ShuttingDown = true;
+
+            if (Host != null)
+            {
+                await Host.StopAsync(cancellationToken);
+                Host?.Dispose();
+            }
+
+            Log.Information("Terminated proximity audio host.");
         }
         catch (Exception e)
         {
             Log.Fatal(e, "Error terminating proximity audio host: {Message}", e.Message);
         }
+        finally
+        {
+            ShuttingDown = false;
+        }
     }
 
-    public sealed class ClientConnectionInfo
+    private sealed class ClientConnectionInfo(ConnectionWSServer connection, string discordId)
     {
-        public string discordId = string.Empty;
+        public readonly string             discordId  = discordId;
+        public readonly ConnectionWSServer connection = connection;
     }
 
     public enum OpCode : byte
     {
-        InitPlayers,
-        Position,
-        Disconnect
+        Ping        = 200,
+        InitPlayers = 201,
+        Position    = 202,
+        Disconnect  = 203
     }
 }
