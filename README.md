@@ -16,3 +16,44 @@
   players can connect to you via IP and PORT. Host mode runs a websocket client and a websocket server at the same time.
 - If you're joining, set the IP and PORT to your host's address. Once you're authorized on Discord, Discord users in the
   same voice channel that's also in the Factorio multiplayer game will have their volume affected.
+
+## Building Help
+
+This project has a reference to a modified version of [DiscordIPC](https://github.com/dcdeepesh/DiscordIPC).
+
+To fix this, clone the DiscordIPC project in the same folder as this project's .sln file.
+
+```
+FactorioDiscordProximityAudio
+├─ Client
+├─ DiscordIPC
+└─ FactorioDiscordProximityAudio.sln
+```
+
+Then, inside `DiscordIPC/Commands/SetUserVoiceSettings.cs`, change `volume` and `left`, `right` fields to use the
+`double?` type.
+
+```csharp
+public class SetUserVoiceSettings
+{
+    public class Args
+    {
+        public string  user_id { get; set; }
+        public Pan     pan     { get; set; }
+        public double? volume  { get; set; }
+        public bool?   mute    { get; set; }
+    }
+    public class Data
+    {
+        public string  user_id { get; set; }
+        public Pan     pan     { get; set; }
+        public double? volume  { get; set; }
+        public bool?   mute    { get; set; }
+    }
+    public class Pan
+    {
+        public double? left  { get; set; }
+        public double? right { get; set; }
+    }
+}
+```
