@@ -17,10 +17,15 @@
 - If you're joining, set the IP and PORT to your host's address. Once you're authorized on Discord, Discord users in the
   same voice channel that's also in the Factorio multiplayer game will have their volume affected.
 
+> [!WARNING]  
+> This project uses RPC features that are **invite-only**.
+> If you're using a custom Discord developer application, remember to invite your friends as app testers.
+
 ## Building Help
 
-This project has a reference to a modified version of [DiscordIPC](https://github.com/dcdeepesh/DiscordIPC).
+### Missing DiscordIPC Reference
 
+This project has a reference to a modified version of [DiscordIPC](https://github.com/dcdeepesh/DiscordIPC).
 To fix this, clone the DiscordIPC project in the same folder as this project's .sln file.
 
 ```
@@ -57,3 +62,12 @@ public class SetUserVoiceSettings
     }
 }
 ```
+
+### Discord OAuth2 Credentials
+
+This application depends on an `App.config` file to run and properly authenticate with Discord.
+
+This project provides an example config file named `App.example.config`. Copy or rename it to `App.config`.
+
+Create a Discord application on Discord's [developer portal](https://discord.com/developers/applications),
+copy the client ID and client secret from the OAuth2 tab, and paste them into the `App.config` file.
