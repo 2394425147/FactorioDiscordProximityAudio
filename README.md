@@ -69,5 +69,6 @@ This application depends on an `App.config` file to run and properly authenticat
 
 This project provides an example config file named `App.example.config`. Copy or rename it to `App.config`.
 
-Create a Discord application on Discord's [developer portal](https://discord.com/developers/applications),
-copy the client ID and client secret from the OAuth2 tab, and paste them into the `App.config` file.
+Create a Discord application on Discord's [developer portal](https://discord.com/developers/applications).
+
+Go to the "OAuth2" tab, set a redirect URI, and fill out the information in the `App.config` file accordingly.

@@ -14,6 +14,7 @@ public sealed class DiscordPipeService : IService
 {
     private const string DiscordOAuthClientIdField     = "DiscordOAuthClientId";
     private const string DiscordOAuthClientSecretField = "DiscordOAuthClientSecret";
+    private const string DiscordOAuthRedirectField     = "DiscordOAuthRedirectUri";
 
     public  User?                      LocalUser      { get; set; }
     public  Dictionary<string, double> DefaultVolumes { get; set; } = new();
@@ -37,8 +38,9 @@ public sealed class DiscordPipeService : IService
     {
         if (DiscordPipe == null)
         {
-            if (string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientIdField]) ||
-                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientSecretField]))
+            if (string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientIdField])     ||
+                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientSecretField]) ||
+                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthRedirectField]))
             {
                 Log.Error("Missing Discord OAuth Client ID or Secret.");
                 return false;
@@ -172,7 +174,7 @@ public sealed class DiscordPipeService : IService
             new("client_id", ConfigurationManager.AppSettings[DiscordOAuthClientIdField]         ?? string.Empty),
             new("client_secret", ConfigurationManager.AppSettings[DiscordOAuthClientSecretField] ?? string.Empty),
             new("code", code),
-            new("redirect_uri", "http://localhost/test")
+            new("redirect_uri", ConfigurationManager.AppSettings[DiscordOAuthRedirectField] ?? string.Empty)
         };
 
         using var authenticateRequest = new HttpRequestMessage(HttpMethod.Post, "api/oauth2/token");
