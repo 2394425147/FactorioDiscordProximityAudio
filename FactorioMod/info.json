@@ -1,0 +1,12 @@
+{
+  "name": "factorio-discord-proximity-audio",
+  "version": "0.0.1",
+  "title": "Factorio Discord Proximity Audio",
+  "author": "fumiko",
+  "contact": "rlrdcnyt@gmail.com",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0"
+  ],
+  "description": "[WINDOWS ONLY] Desktop tool required.\nChanges volume of players in a Discord voice channel to match their position in Factorio."
+}
