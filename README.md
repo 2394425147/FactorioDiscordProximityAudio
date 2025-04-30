@@ -1,0 +1,18 @@
+# Factorio Discord Proximity Audio
+
+## Requirements
+
+- A Windows machine. An external application is required to transmit data to other clients.
+- Discord installed with full Discord RPC interface support (Clients like Vesktop don't work due to the usage of arRPC,
+  which doesn't support updating user volume via RPC).
+- (Host only) An address and port connectable through the internet. (Please exercise network security)
+
+## Setup
+
+- Build, or download the client
+  from [the releases page](https://github.com/2394425147/FactorioDiscordProximityAudio/releases).
+- Open the client. (You need .NET 9 to run this application)
+- If you're hosting, switch the mode to "Host", and click the "Connect" button. Once you're authorized on Discord, your
+  players can connect to you via IP and PORT. Host mode runs a websocket client and a websocket server at the same time.
+- If you're joining, set the IP and PORT to your host's address. Once you're authorized on Discord, Discord users in the
+  same voice channel that's also in the Factorio multiplayer game will have their volume affected.
