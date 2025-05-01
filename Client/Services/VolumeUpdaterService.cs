@@ -34,11 +34,13 @@ public sealed class VolumeUpdaterService : IService
 
     private void OnClientUpdateReceived(string discordId, FactorioPosition position)
     {
-        Clients[discordId] = new ClientPosition
+        if (Clients.TryGetValue(discordId, out var clientPosition))
         {
-            DiscordId = discordId,
-            Position  = position
-        };
+            clientPosition = new ClientPosition { DiscordId = discordId };
+            Clients.Add(discordId, clientPosition);
+        }
+
+        clientPosition!.Position = position;
 
         if (FactorioFileWatcher?.LastPositionPacket == null)
             return;

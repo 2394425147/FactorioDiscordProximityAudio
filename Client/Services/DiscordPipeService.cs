@@ -1,5 +1,4 @@
 ﻿using System.Net.Http.Json;
-using System.Runtime.CompilerServices;
 using Client.Models;
 using Dec.DiscordIPC;
 using Dec.DiscordIPC.Commands;
@@ -113,8 +112,11 @@ public sealed class DiscordPipeService : IService
             if (voice.user.id == LocalUser!.id)
                 continue;
 
-            Log.Information("Tracking {Username} from Discord.", voice.user.username);
-            DefaultVolumes[voice.user.id] = LogarithmicToPerceptual(voice.volume.GetValueOrDefault(100) * 0.01);
+            DefaultVolumes[voice.user.id] = voice.volume.GetValueOrDefault(100);
+
+            if (Main.useVerboseLogging)
+                Log.Information("Tracking {Username} from Discord with default volume {Volume}.",
+                                voice.user.username, voice.volume.GetValueOrDefault(100));
         }
     }
 
@@ -159,7 +161,10 @@ public sealed class DiscordPipeService : IService
             return;
 
         Log.Information("Tracking {UserUsername} from Discord.", e.user.username);
-        DefaultVolumes[e.user.id] = LogarithmicToPerceptual(e.volume.GetValueOrDefault(100) * 0.01);
+
+        // TODO)) Temporary fix
+        var volume = e.volume.GetValueOrDefault(100);
+        DefaultVolumes[e.user.id] = volume < 80 ? 80 : volume;
     }
 
     private async Task<HttpAuthenticationContent?> GetOAuth2Token(string code)
@@ -202,7 +207,7 @@ public sealed class DiscordPipeService : IService
             var args = new SetUserVoiceSettings.Args
             {
                 user_id = discordId,
-                volume  = PerceptualToLogarithmic(defaultVolume * volume) * 100
+                volume  = defaultVolume * volume
             };
 
             // If this doesn't work, change L64 on LowLevelDiscordIPC.cs to use nonce from new parameter
@@ -229,7 +234,7 @@ public sealed class DiscordPipeService : IService
             var args = new SetUserVoiceSettings.Args
             {
                 user_id = discordId,
-                volume  = defaultVolume * 100
+                volume  = defaultVolume
             };
 
             Log.Information("Reset {DiscordId} volume to {Volume}.", discordId, args.volume);
@@ -239,21 +244,6 @@ public sealed class DiscordPipeService : IService
         {
             Log.Fatal(e, "Error while resetting voice settings: {Message}", e.Message);
         }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static double PerceptualToLogarithmic(double perceptual)
-    {
-        // Rough approximation of https://github.com/discord/perceptual
-        perceptual *= perceptual;
-        return perceptual * perceptual;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static double LogarithmicToPerceptual(double logarithmic)
-    {
-        const double loudnessRange = 50;
-        return (loudnessRange + 20 * Math.Log10(logarithmic)) / loudnessRange;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

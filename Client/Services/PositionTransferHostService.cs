@@ -30,8 +30,12 @@ public sealed class PositionTransferHostService : IService
 
             Host.ConnectionEvent += OnClientConnectionChanged;
             Host.MessageEvent    += OnMessageReceived;
-
             await Host.StartAsync(cancellationToken);
+            Host.Server.Server.NoDelay     = true;
+            Host.Server.Server.SendTimeout = 500;
+
+            _ = Task.Run(() => PingClients(cancellationToken), cancellationToken);
+
             Log.Information("Listening for connections at port {TargetPort}.", Main.targetPort);
         }
         catch (Exception e)
@@ -43,16 +47,40 @@ public sealed class PositionTransferHostService : IService
         return true;
     }
 
+    private async Task PingClients(CancellationToken cancellationToken)
+    {
+        while (Host is { IsServerRunning: true } && cancellationToken.IsCancellationRequested == false)
+        {
+            try
+            {
+                if (Host.ConnectionCount > 0)
+                {
+                    if (Main.useVerboseLogging)
+                        Log.Information("Pinging clients...");
+
+                    await Host.BroadcastToAllConnectionsAsync([(byte)OpCode.Ping], cancellationToken);
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "Error pinging clients: {Message}", e.Message);
+            }
+        }
+    }
+
     private void OnClientConnectionChanged(object sender, WSConnectionServerEventArgs args)
     {
         switch (args.ConnectionEventType)
         {
             case ConnectionEventType.Connected:
-                Task.Run(() => OnPong(args.Connection));
+                Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo(args.Connection));
+                Log.Information("Client {ValueDiscordId} connected.", args.Connection.ConnectionId);
                 break;
             case ConnectionEventType.Disconnect:
             {
-                if (!Clients.Remove(args.Connection.ConnectionId, out var info))
+                if (!Clients.Remove(args.Connection.ConnectionId, out var info) || info.discordId == null)
                     return;
 
                 if (ShuttingDown)
@@ -62,26 +90,6 @@ public sealed class PositionTransferHostService : IService
                 Task.Run(() => BroadcastClientDisconnectPacket(info.discordId));
                 break;
             }
-        }
-    }
-
-    private async void OnPong(ConnectionWSServer connection)
-    {
-        try
-        {
-            if (Main.useVerboseLogging && Clients.TryGetValue(connection.ConnectionId, out var client))
-                Log.Information("Pong from {DiscordID}.", client.discordId);
-
-            await Task.Delay(TimeSpan.FromSeconds(15));
-
-            if (Host is not { IsServerRunning: true })
-                return;
-
-            await Host.SendToConnectionAsync([(byte)OpCode.Ping], connection);
-        }
-        catch (Exception e)
-        {
-            Log.Error(e, "Error pinging client: {Message}", e.Message);
         }
     }
 
@@ -97,12 +105,20 @@ public sealed class PositionTransferHostService : IService
         switch (opCode)
         {
             case PositionTransferClientService.OpCode.Pong:
-                Task.Run(() => OnPong(args.Connection));
+                if (Main.useVerboseLogging && Clients.TryGetValue(args.Connection.ConnectionId, out var client))
+                    Log.Information("Pong from {Identifier}.", client.Identifier);
                 break;
             case PositionTransferClientService.OpCode.Identify:
             {
                 var discordId = Encoding.ASCII.GetString(buffer.Span);
-                Clients.TryAdd(args.Connection.ConnectionId, new ClientConnectionInfo(args.Connection, discordId));
+
+                if (!Clients.TryGetValue(args.Connection.ConnectionId, out var clientInfo))
+                {
+                    clientInfo = new ClientConnectionInfo(args.Connection);
+                    Clients.Add(args.Connection.ConnectionId, clientInfo);
+                }
+
+                clientInfo.discordId = discordId;
                 Log.Information("Client {DiscordId} connected.", discordId);
                 Task.Run(() => InitializePlayers(discordId, args.Connection));
                 break;
@@ -112,7 +128,7 @@ public sealed class PositionTransferHostService : IService
                 if (!Clients.TryGetValue(args.Connection.ConnectionId, out var value))
                     return;
 
-                Task.Run(() => BroadcastPositionPacket(args.Connection, buffer, value.discordId));
+                Task.Run(() => BroadcastPositionPacket(buffer, value.Identifier));
                 break;
             }
         }
@@ -142,7 +158,7 @@ public sealed class PositionTransferHostService : IService
             await Host.SendToConnectionAsync(ms.ToArray(), connection);
     }
 
-    public async Task BroadcastPositionPacket(ConnectionWSServer connection, Memory<byte> data, string discordId)
+    public async Task BroadcastPositionPacket(Memory<byte> data, string senderDiscordId)
     {
         if (Host == null)
             return;
@@ -152,18 +168,15 @@ public sealed class PositionTransferHostService : IService
         {
             binaryWriter.Write((byte)OpCode.Position);
             binaryWriter.Write(data.Span);
-            binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
+            binaryWriter.Write(Encoding.ASCII.GetBytes(senderDiscordId));
         }
 
         var memory = ms.ToArray();
 
-        foreach (var clients in Clients.Values)
-        {
-            if (clients.connection == connection)
-                continue;
+        await Host.BroadcastToAllConnectionsAsync(memory);
 
-            await Host.SendToConnectionAsync(memory, connection);
-        }
+        if (Main.useVerboseLogging)
+            Log.Information("Broadcasted position from {DiscordId}.", senderDiscordId);
     }
 
     private async Task BroadcastClientDisconnectPacket(string discordId)
@@ -205,10 +218,12 @@ public sealed class PositionTransferHostService : IService
         }
     }
 
-    private sealed class ClientConnectionInfo(ConnectionWSServer connection, string discordId)
+    private sealed class ClientConnectionInfo(ConnectionWSServer connection)
     {
-        public readonly string             discordId  = discordId;
+        public string Identifier => discordId ?? connection.ConnectionId;
+
         public readonly ConnectionWSServer connection = connection;
+        public          string?            discordId;
     }
 
     public enum OpCode : byte

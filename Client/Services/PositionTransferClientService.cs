@@ -34,6 +34,7 @@ public sealed class PositionTransferClientService : IService
             WebSocket.ReconnectionHappened.Subscribe(OnReconnectionHappened);
             WebSocket.MessageReceived.Subscribe(OnMessageReceived);
             WebSocket.DisconnectionHappened.Subscribe(OnDisconnectionHappened);
+            WebSocket.IsTextMessageConversionEnabled = false;
             await WebSocket.Start();
 
             FactorioFileWatcher!.OnPositionUpdated += OnLocalPositionUpdated;
@@ -161,9 +162,12 @@ public sealed class PositionTransferClientService : IService
                     var x         = BitConverter.ToDouble(buffer[..8].Span);
                     var y         = BitConverter.ToDouble(buffer[8..16].Span);
                     var surface   = BitConverter.ToInt32(buffer[16..20].Span);
-                    var discordId = Encoding.ASCII.GetString(buffer[20..].Span);
+                    var discordId = DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer[20..].Span));
 
-                    AnyClientUpdateReceived?.Invoke(DiscordUtility.GetUid(discordId), new FactorioPosition
+                    if (discordId == DiscordPipe?.LocalUser?.id)
+                        return;
+
+                    AnyClientUpdateReceived?.Invoke(discordId, new FactorioPosition
                     {
                         surfaceIndex = surface,
                         x            = x,
@@ -217,7 +221,7 @@ public sealed class PositionTransferClientService : IService
         {
             await SendPositionPacket(obj);
             if (Main.useVerboseLogging)
-                Log.Information("Sent position of ({X:F2},{Y:F2},{Surface}) to proximity audio host.",
+                Log.Information("Sent ({X:F2},{Y:F2},{Surface}) to proximity audio host.",
                                 obj.x, obj.y, obj.surfaceIndex);
         }
         catch (Exception e)
