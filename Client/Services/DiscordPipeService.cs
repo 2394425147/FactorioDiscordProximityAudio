@@ -38,16 +38,16 @@ public sealed class DiscordPipeService : IService
     {
         if (DiscordPipe == null)
         {
-            if (string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientIdField])     ||
-                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthClientSecretField]) ||
-                string.IsNullOrEmpty(ConfigurationManager.AppSettings[DiscordOAuthRedirectField]))
+            if (string.IsNullOrEmpty(Program.GetConfig(DiscordOAuthClientIdField))     ||
+                string.IsNullOrEmpty(Program.GetConfig(DiscordOAuthClientSecretField)) ||
+                string.IsNullOrEmpty(Program.GetConfig(DiscordOAuthRedirectField)))
             {
                 Log.Error("Missing Discord OAuth Client ID or Secret.");
                 return false;
             }
 
             Log.Information("Connecting to Discord...");
-            DiscordPipe = new DiscordIPC(ConfigurationManager.AppSettings[DiscordOAuthClientIdField]);
+            DiscordPipe = new DiscordIPC(Program.GetConfig(DiscordOAuthClientIdField));
             await DiscordPipe.InitAsync();
 
             string accessToken;
@@ -57,7 +57,7 @@ public sealed class DiscordPipeService : IService
                     new Authorize.Args
                     {
                         scopes    = ["rpc", "rpc.voice.read", "rpc.voice.write"],
-                        client_id = ConfigurationManager.AppSettings[DiscordOAuthClientIdField]
+                        client_id = Program.GetConfig(DiscordOAuthClientIdField)
                     });
 
                 var oauth2 = await GetOAuth2Token(codeResponse.code);
@@ -171,10 +171,10 @@ public sealed class DiscordPipeService : IService
         var records = new List<KeyValuePair<string, string>>
         {
             new("grant_type", "authorization_code"),
-            new("client_id", ConfigurationManager.AppSettings[DiscordOAuthClientIdField]         ?? string.Empty),
-            new("client_secret", ConfigurationManager.AppSettings[DiscordOAuthClientSecretField] ?? string.Empty),
+            new("client_id", Program.GetConfig(DiscordOAuthClientIdField)),
+            new("client_secret", Program.GetConfig(DiscordOAuthClientSecretField)),
             new("code", code),
-            new("redirect_uri", ConfigurationManager.AppSettings[DiscordOAuthRedirectField] ?? string.Empty)
+            new("redirect_uri", Program.GetConfig(DiscordOAuthRedirectField))
         };
 
         using var authenticateRequest = new HttpRequestMessage(HttpMethod.Post, "api/oauth2/token");

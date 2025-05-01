@@ -9,17 +9,42 @@
 
 ## Setup
 
-- Build, or download the client
-  from [the releases page](https://github.com/2394425147/FactorioDiscordProximityAudio/releases).
-- Open the client. (You need .NET 9 to run this application)
-- If you're hosting, switch the mode to "Host", and click the "Connect" button. Once you're authorized on Discord, your
-  players can connect to you via IP and PORT. Host mode runs a websocket client and a websocket server at the same time.
-- If you're joining, set the IP and PORT to your host's address. Once you're authorized on Discord, Discord users in the
-  same voice channel that's also in the Factorio multiplayer game will have their volume affected.
+### Hosting
 
 > [!WARNING]  
 > This project uses RPC features that are **invite-only**.
 > If you're using a custom Discord developer application, remember to invite your friends as app testers.
+
+Download the client from [the releases page](https://github.com/2394425147/FactorioDiscordProximityAudio/releases).
+
+Go to [the official developer portal](https://discord.com/developers/applications) and create a Discord application.
+
+Go to the "OAuth2" tab, and set a redirect URI. (Don't close this tab yet!)
+
+In the same folder as the client, create a `.env` file, and fill it with the content like this:
+
+```
+DiscordOAuthClientId=<Your Discord Client ID>
+DiscordOAuthClientSecret=<Your Discord Client Secret>
+DiscordOAuthRedirectUri=<The redirect URI you set>
+```
+
+Open the client. (You need .NET 9 to run this application)
+
+Switch the mode to "Host", and click the "Connect" button. Once you're authorized on Discord, your
+players can connect to you via IP and PORT. Host mode runs a websocket client and a websocket server at the same time.
+
+### Joining
+
+Download the client from [the releases page](https://github.com/2394425147/FactorioDiscordProximityAudio/releases).
+
+In the same folder as the client, create a `.env` file with the credentials for your Discord application.
+(Your hosting friend should have made this file for you)
+
+Open the client. (You need .NET 9 to run this application)
+
+Set the IP and PORT to your host's address. Once you're authorized on Discord, Discord users in the
+same voice channel that's also in the Factorio multiplayer game will have their volume affected.
 
 ## Building Help
 

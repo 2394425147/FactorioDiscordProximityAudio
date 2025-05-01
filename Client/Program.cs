@@ -1,3 +1,7 @@
+using System.Configuration;
+using dotenv.net;
+using dotenv.net.Utilities;
+
 namespace Client;
 
 internal static class Program
@@ -12,10 +16,20 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        DotEnv.Load();
+
         // To customize application configuration such as set high DPI settings or default font,
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
         Application.SetHighDpiMode(HighDpiMode.DpiUnawareGdiScaled);
         Application.Run(new Main());
+    }
+
+    public static string GetConfig(string key)
+    {
+        if (ConfigurationManager.AppSettings["UseEnvironmentFile"] == "true")
+            return EnvReader.GetStringValue(key);
+
+        return ConfigurationManager.AppSettings[key] ?? string.Empty;
     }
 }

@@ -7,9 +7,15 @@
         <UseWindowsForms>true</UseWindowsForms>
         <ImplicitUsings>enable</ImplicitUsings>
         <ForceDesignerDpiUnaware>true</ForceDesignerDpiUnaware>
+        <Company>Reflektone</Company>
+        <Product>FactorioDiscordProximityAudio</Product>
+        <AssemblyVersion>0.0.0.1</AssemblyVersion>
+        <FileVersion>0.0.0.1</FileVersion>
+        <NeutralLanguage>en</NeutralLanguage>
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="dotenv.net" Version="3.2.1" />
       <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
       <PackageReference Include="Serilog.Sinks.RichTextBox.WinForms.Colored" Version="2.1.0" />
       <PackageReference Include="Websocket.Client" Version="5.1.2" />
