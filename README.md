@@ -21,12 +21,20 @@ Go to [the official developer portal](https://discord.com/developers/application
 
 Go to the "OAuth2" tab, and set a redirect URI. (Don't close this tab yet!)
 
-In the same folder as the client, create a `.env` file, and fill it with the content like this:
+In the same folder as the client, create a `Client.dll.config` file, and fill it with the content like this:
 
 ```
-DiscordOAuthClientId=<Your Discord Client ID>
-DiscordOAuthClientSecret=<Your Discord Client Secret>
-DiscordOAuthRedirectUri=<The redirect URI you set>
+<?xml version="1.0" encoding="utf-8"?>
+
+<configuration>
+    <appSettings>
+        <add key="DiscordOAuthClientId" value="YOUR OAUTH CLIENT ID" />
+        <add key="DiscordOAuthClientSecret" value="YOUR OAUTH CLIENT SECRET" />
+
+        <!-- Any redirect uri will work, such as "http://localhost/test" -->
+        <add key="DiscordOAuthRedirectUri" value="http://localhost/test" />
+    </appSettings>
+</configuration>
 ```
 
 Open the client. (You need .NET 9 to run this application)
@@ -38,7 +46,7 @@ players can connect to you via IP and PORT. Host mode runs a websocket client an
 
 Download the client from [the releases page](https://github.com/2394425147/FactorioDiscordProximityAudio/releases).
 
-In the same folder as the client, create a `.env` file with the credentials for your Discord application.
+In the same folder as the client, create a `Client.dll.config` file with the credentials for your Discord application.
 (Your hosting friend should have made this file for you)
 
 Open the client. (You need .NET 9 to run this application)

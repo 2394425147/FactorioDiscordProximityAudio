@@ -1,5 +1,4 @@
-﻿using System.Configuration;
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using Client.Models;
 using Dec.DiscordIPC;
