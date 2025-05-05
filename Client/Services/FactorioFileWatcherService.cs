@@ -5,14 +5,16 @@ namespace Client.Services;
 
 public sealed class FactorioFileWatcherService : IService
 {
-    public event Action<FactorioPosition>? OnPositionUpdated;
-    public FactorioPosition?               LastPositionPacket { get; private set; }
+    public event OnPositionUpdatedDelegate? OnPositionUpdated;
+    public ClientPosition?                  LastKnownPosition { get; private set; }
 
     private string             TargetFolderFullPath { get; set; }
     private string             TargetFileFullPath   { get; set; }
     private FileSystemWatcher? FileSystemWatcher    { get; set; }
 
     private const string TargetFileName = "fdpa-comm";
+
+    public delegate void OnPositionUpdatedDelegate();
 
     public FactorioFileWatcherService()
     {
@@ -47,7 +49,6 @@ public sealed class FactorioFileWatcherService : IService
                 FileSystemWatcher.Changed += OnFileSystemChanged;
                 Log.Information("Monitoring {S}.", TargetFileFullPath);
             }
-
         }
         catch (Exception e)
         {
@@ -87,13 +88,13 @@ public sealed class FactorioFileWatcherService : IService
             var y            = binaryReader.ReadDouble();
             var surfaceIndex = binaryReader.ReadInt32();
 
-            var packet = new FactorioPosition { x = x, y = y, surfaceIndex = surfaceIndex };
+            var position = new ClientPosition { x = x, y = y, surfaceIndex = surfaceIndex };
 
-            if (LastPositionPacket?.Equals(packet) ?? false)
+            if (LastKnownPosition?.Equals(position) ?? false)
                 return;
 
-            LastPositionPacket = packet;
-            OnPositionUpdated?.Invoke(packet);
+            LastKnownPosition = position;
+            OnPositionUpdated?.Invoke();
         }
         catch (Exception ex)
         {

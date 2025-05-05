@@ -1,4 +1,5 @@
-﻿using Serilog;
+﻿using ENet;
+using Serilog;
 
 namespace Client.Services;
 
@@ -11,6 +12,12 @@ public sealed class ServicesMarshal(IServiceProvider serviceProvider)
 
     public async Task StartAsync(Type[][] serviceTypes, CancellationToken ct)
     {
+        if (!Library.Initialize())
+        {
+            Log.Fatal("Failed to initialize ENet.");
+            return;
+        }
+
         var resolutionStep = serviceTypes
                              .Select(step => step.Select(serviceProvider.GetService).Cast<IService>().ToArray())
                              .ToArray();
@@ -55,6 +62,8 @@ public sealed class ServicesMarshal(IServiceProvider serviceProvider)
                 var service = _activeServices[i];
                 await service.StopAsync();
             }
+
+            Library.Deinitialize();
 
             _activeServices.Clear();
             OnStopped?.Invoke();

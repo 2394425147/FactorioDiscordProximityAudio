@@ -12,7 +12,7 @@ public sealed partial class Main : Form
     private static readonly ServiceContainer ServiceContainer = new();
 
     public static string? targetIp;
-    public static int     targetPort;
+    public static ushort  targetPort;
     public static bool    useVerboseLogging;
 
     private string _connectButtonText = string.Empty;
@@ -143,15 +143,15 @@ public sealed partial class Main : Form
         await servicesMarshal.StopAsync();
     }
 
-    private bool TryValidateHostWebSocketDestination(out string address, out int port)
+    private bool TryValidateHostWebSocketDestination(out string address, out ushort port)
     {
         port    = 0;
         address = "127.0.0.1";
 
-        var portsInUse = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Select(x => x.Port).ToHashSet();
+        var portsInUse = AddressUtility.GetActiveUdpPorts();
 
-        if (!int.TryParse(portTextbox.Text, out port) ||
-            port is <= 0 or >= ushort.MaxValue        ||
+        if (!ushort.TryParse(portTextbox.Text, out port) ||
+            port is <= 0 or >= ushort.MaxValue           ||
             portsInUse.Contains(port))
         {
             Log.Warning("Port is left empty or unavailable. Finding a port...");
@@ -179,7 +179,7 @@ public sealed partial class Main : Form
         return true;
     }
 
-    private bool TryValidateClientWebSocketDestination(out string address, out int port)
+    private bool TryValidateClientWebSocketDestination(out string address, out ushort port)
     {
         port    = 0;
         address = string.Empty;
@@ -196,7 +196,7 @@ public sealed partial class Main : Form
             return false;
         }
 
-        if (!int.TryParse(portTextbox.Text, out port) || port is <= 0 or >= ushort.MaxValue)
+        if (!ushort.TryParse(portTextbox.Text, out port))
         {
             Log.Error("Port is invalid.");
             return false;

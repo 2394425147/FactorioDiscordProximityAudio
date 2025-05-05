@@ -1,8 +1,8 @@
-﻿using System.Net.WebSockets;
+﻿using System.Collections.Concurrent;
 using System.Text;
 using Client.Models;
+using ENet;
 using Serilog;
-using Websocket.Client;
 
 namespace Client.Services;
 
@@ -10,32 +10,48 @@ public sealed class PositionTransferClientService : IService
 {
     private FactorioFileWatcherService? FactorioFileWatcher { get; set; }
     private DiscordPipeService?         DiscordPipe         { get; set; }
-    private WebsocketClient?            WebSocket           { get; set; }
+    private Host?                       Client              { get; set; }
+    private Thread?                     ENetThread          { get; set; }
+    private bool                        ShuttingDown        { get; set; }
 
-    public event OnAnyClientUpdateReceived? AnyClientUpdateReceived;
-    public event OnAnyClientDisconnected?   AnyClientDisconnected;
+    public ConcurrentDictionary<uint, string> PeerToDiscordId { get; } = new();
+    public event OnAnyClientUpdateReceived?   AnyClientUpdateReceived;
+    public event OnAnyClientDisconnected?     AnyClientDisconnected;
 
-    public delegate void OnAnyClientUpdateReceived(string discordId, FactorioPosition position);
+    public delegate void OnAnyClientUpdateReceived(string discordId, ClientPosition position);
 
     public delegate void OnAnyClientDisconnected(string discordId);
 
-    public async Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
+    private Peer? _server;
+
+    public Task<bool> StartAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
         DiscordPipe         = services.GetService(typeof(DiscordPipeService)) as DiscordPipeService;
         FactorioFileWatcher = services.GetService(typeof(FactorioFileWatcherService)) as FactorioFileWatcherService;
-        DiscordPipe         = services.GetService(typeof(DiscordPipeService)) as DiscordPipeService;
 
         try
         {
+            if (DiscordPipe?.LocalUser == null)
+            {
+                Log.Error("Discord handshake not established before websocket connection.");
+                return Task.FromResult(false);
+            }
+
             Log.Information("Connecting to {TargetIp}:{TargetPort}...", Main.targetIp, Main.targetPort);
 
-            WebSocket                       = new WebsocketClient(new Uri($"ws://{Main.targetIp}:{Main.targetPort}"));
-            WebSocket.ErrorReconnectTimeout = TimeSpan.FromSeconds(3);
-            WebSocket.ReconnectionHappened.Subscribe(OnReconnectionHappened);
-            WebSocket.MessageReceived.Subscribe(OnMessageReceived);
-            WebSocket.DisconnectionHappened.Subscribe(OnDisconnectionHappened);
-            WebSocket.IsTextMessageConversionEnabled = false;
-            await WebSocket.Start();
+            Client = new Host();
+            var address = new Address
+            {
+                Port = Main.targetPort
+            };
+            address.SetIP(Main.targetIp);
+
+            var channelLimit = Enum.GetValues<ChannelType>().Length;
+            Client.Create(null, 1, channelLimit);
+            _server = Client.Connect(address, channelLimit);
+
+            ENetThread = new Thread(MainLoop);
+            ENetThread.Start();
 
             FactorioFileWatcher!.OnPositionUpdated += OnLocalPositionUpdated;
             Log.Information("Started client.");
@@ -43,171 +59,109 @@ public sealed class PositionTransferClientService : IService
         catch (Exception e)
         {
             Log.Fatal(e, "Error while connecting to proximity audio host: {Message}", e.Message);
-            return false;
+            return Task.FromResult(false);
         }
 
-        return true;
+        return Task.FromResult(true);
     }
 
-    private void OnReconnectionHappened(ReconnectionInfo info)
+    private void MainLoop()
     {
-        switch (info.Type)
+        while (Client is { IsSet: true } && !ShuttingDown)
         {
-            case ReconnectionType.Initial:
-            case ReconnectionType.Lost:
-            case ReconnectionType.NoMessageReceived:
-            case ReconnectionType.Error:
-            case ReconnectionType.ByUser:
-            case ReconnectionType.ByServer:
-                Log.Information("Connected to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
+            // Keep processing events until ...
+            if (Client.CheckEvents(out var netEvent) <= 0)
+            {
+                // No events to process, look for packets to turn into events
+                // ENet runs on a single thread, if timeout is 0, it'll use 100% of the CPU
+                if (Client.Service(15, out netEvent) <= 0)
+                    continue;
+            }
+
+            switch (netEvent.Type)
+            {
+                case EventType.None:
+                    break;
+
+                case EventType.Connect:
+                    Log.Information("Successfully connected to server.");
+                    SendIdentificationPacket(DiscordPipe!.LocalUser!.id);
+                    break;
+
+                case EventType.Disconnect:
+                    Log.Information("Disconnected from server.");
+                    break;
+
+                case EventType.Timeout:
+                    Log.Warning("Connection timed out.");
+                    break;
+
+                case EventType.Receive:
+                    OnMessageReceived(ref netEvent);
+                    netEvent.Packet.Dispose();
+                    break;
+            }
+        }
+    }
+
+    private unsafe void OnMessageReceived(ref Event netEvent)
+    {
+        var buffer = new Span<byte>((byte*)netEvent.Packet.Data, netEvent.Packet.Length);
+        var opCode = (ChannelType)netEvent.ChannelID;
+
+        switch (opCode)
+        {
+            case ChannelType.Identify:
+            {
+                while (buffer.Length > 0)
+                {
+                    var clientId = BitConverter.ToUInt32(buffer[..sizeof(uint)]);
+                    buffer = buffer[sizeof(uint)..];
+                    var discordId = DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer[..DiscordUtility.MaxUidLength]));
+                    buffer = buffer[DiscordUtility.MaxUidLength..];
+
+                    PeerToDiscordId[clientId] = discordId;
+                }
+
                 break;
-            default:
-                throw new ArgumentOutOfRangeException();
-        }
+            }
+            case ChannelType.Position:
+            {
+                var x       = BitConverter.ToDouble(buffer[..8]);
+                var y       = BitConverter.ToDouble(buffer[8..16]);
+                var surface = BitConverter.ToInt32(buffer[16..20]);
+                var peerId  = BitConverter.ToUInt32(buffer[20..]);
 
-        if (DiscordPipe?.LocalUser == null)
-        {
-            Log.Error("Discord handshake not established before websocket connection.");
-            return;
+                AnyClientUpdateReceived?.Invoke(PeerToDiscordId[peerId], new ClientPosition
+                {
+                    x            = x,
+                    y            = y,
+                    surfaceIndex = surface
+                });
+                break;
+            }
+            case ChannelType.Disconnect:
+            {
+                var peerId = BitConverter.ToUInt32(buffer);
+                AnyClientDisconnected?.Invoke(PeerToDiscordId[peerId]);
+                break;
+            }
         }
-
-        Task.Run(() => SendIdentificationPacket(DiscordPipe.LocalUser.id));
     }
 
-    private async void OnDisconnectionHappened(DisconnectionInfo info)
+    private void SendIdentificationPacket(string discordId)
     {
         try
         {
-            switch (info.Type)
-            {
-                case DisconnectionType.Exit:
-                    if (Main.useVerboseLogging)
-                        Log.Information("Disposed client websocket.");
-                    break;
-                case DisconnectionType.Lost:
-                    Log.Error("Lost connection to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
-                    break;
-                case DisconnectionType.NoMessageReceived:
-                    Log.Warning("Lost connection to {TargetIp}:{TargetPort} due to no message received.",
-                                Main.targetIp, Main.targetPort);
-                    break;
-                case DisconnectionType.Error:
-                    Log.Error("Error while connecting to {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
-                    break;
-                case DisconnectionType.ByUser:
-                    if (Main.useVerboseLogging)
-                        Log.Information("Disconnected from {TargetIp}:{TargetPort}.", Main.targetIp, Main.targetPort);
-                    break;
-                case DisconnectionType.ByServer:
-                    Log.Information("Proximity audio host closed connection.");
-                    await WebSocket!.Stop(WebSocketCloseStatus.NormalClosure, "Closing connection.");
-                    WebSocket?.Dispose();
-                    WebSocket = null;
-                    await Main.servicesMarshal.StopAsync();
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException();
-            }
-        }
-        catch (Exception e)
-        {
-            Log.Fatal(e, "Error while disconnecting from proximity audio host: {Message}", e.Message);
-        }
-    }
+            var bytes = Encoding.ASCII.GetBytes(DiscordUtility.GetFixedLengthUid(discordId));
 
-    private void OnMessageReceived(ResponseMessage response)
-    {
-        try
-        {
-            var buffer = new Memory<byte>(response.Binary);
-            var opCode = (PositionTransferHostService.OpCode)buffer.Span[0];
-            buffer = buffer[1..];
+            using var ms = new MemoryStream(bytes.Length);
+            using (var binaryWriter = new BinaryWriter(ms))
+                binaryWriter.Write(bytes);
 
-            switch (opCode)
-            {
-                case PositionTransferHostService.OpCode.Ping:
-                {
-                    SendPongPacket();
-                    break;
-                }
-                case PositionTransferHostService.OpCode.InitPlayers:
-                {
-                    while (buffer.Length > 0)
-                    {
-                        var discordId =
-                            DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer.Span[..DiscordUtility.MaxUidLength]));
-
-                        buffer = buffer[DiscordUtility.MaxUidLength..];
-
-                        var x       = BitConverter.ToDouble(buffer[..8].Span);
-                        var y       = BitConverter.ToDouble(buffer[8..16].Span);
-                        var surface = BitConverter.ToInt32(buffer[16..20].Span);
-
-                        AnyClientUpdateReceived?.Invoke(discordId, new FactorioPosition
-                        {
-                            surfaceIndex = surface,
-                            x            = x,
-                            y            = y
-                        });
-
-                        buffer = buffer[20..];
-                    }
-
-                    if (FactorioFileWatcher?.LastPositionPacket != null)
-                        Task.Run(() => SendPositionPacket(FactorioFileWatcher.LastPositionPacket.Value));
-                    break;
-                }
-                case PositionTransferHostService.OpCode.Position:
-                {
-                    var x         = BitConverter.ToDouble(buffer[..8].Span);
-                    var y         = BitConverter.ToDouble(buffer[8..16].Span);
-                    var surface   = BitConverter.ToInt32(buffer[16..20].Span);
-                    var discordId = DiscordUtility.GetUid(Encoding.ASCII.GetString(buffer[20..].Span));
-
-                    if (discordId == DiscordPipe?.LocalUser?.id)
-                        return;
-
-                    AnyClientUpdateReceived?.Invoke(discordId, new FactorioPosition
-                    {
-                        surfaceIndex = surface,
-                        x            = x,
-                        y            = y
-                    });
-                    break;
-                }
-                case PositionTransferHostService.OpCode.Disconnect:
-                {
-                    var discordId = Encoding.ASCII.GetString(buffer.Span);
-                    AnyClientDisconnected?.Invoke(DiscordUtility.GetUid(discordId));
-                    break;
-                }
-            }
-        }
-        catch (Exception e)
-        {
-            Log.Fatal(e, "Error processing proximity audio update: {Message}", e.Message);
-        }
-    }
-
-    private void SendPongPacket()
-    {
-        WebSocket?.Send([(byte)OpCode.Pong]);
-        if (Main.useVerboseLogging)
-            Log.Information("Sent pong to proximity audio host.");
-    }
-
-    private async Task SendIdentificationPacket(string discordId)
-    {
-        try
-        {
-            using var ms = new MemoryStream();
-            await using (var binaryWriter = new BinaryWriter(ms))
-            {
-                binaryWriter.Write((byte)OpCode.Identify);
-                binaryWriter.Write(Encoding.ASCII.GetBytes(discordId));
-            }
-
-            WebSocket!.Send(ms.ToArray());
+            var packet = new Packet();
+            packet.Create(ms.GetBuffer());
+            _server?.Send((byte)ChannelType.Identify, ref packet);
         }
         catch (Exception e)
         {
@@ -215,38 +169,30 @@ public sealed class PositionTransferClientService : IService
         }
     }
 
-    private async void OnLocalPositionUpdated(FactorioPosition obj)
+    private void OnLocalPositionUpdated()
     {
         try
         {
-            await SendPositionPacket(obj);
-            if (Main.useVerboseLogging)
-                Log.Information("Sent ({X:F2},{Y:F2},{Surface}) to proximity audio host.",
-                                obj.x, obj.y, obj.surfaceIndex);
-        }
-        catch (Exception e)
-        {
-            Log.Fatal(e, "Error sending position to proximity audio host: {Message}", e.Message);
-        }
-    }
-
-    private async Task SendPositionPacket(FactorioPosition obj)
-    {
-        try
-        {
-            if (DiscordPipe?.LocalUser == null || WebSocket == null)
+            if (Client == null || FactorioFileWatcher is not { LastKnownPosition: not null })
                 return;
 
-            using var ms = new MemoryStream();
-            await using (var binaryWriter = new BinaryWriter(ms))
+            var position = FactorioFileWatcher.LastKnownPosition.Value;
+
+            using var ms = new MemoryStream(sizeof(double) * 2 + sizeof(int));
+            using (var binaryWriter = new BinaryWriter(ms))
             {
-                binaryWriter.Write((byte)OpCode.Update);
-                binaryWriter.Write(obj.x);
-                binaryWriter.Write(obj.y);
-                binaryWriter.Write(obj.surfaceIndex);
+                binaryWriter.Write(position.x);
+                binaryWriter.Write(position.y);
+                binaryWriter.Write(position.surfaceIndex);
             }
 
-            WebSocket.Send(ms.ToArray());
+            var packet = new Packet();
+            packet.Create(ms.GetBuffer());
+            _server?.Send((byte)ChannelType.Position, ref packet);
+
+            if (Main.useVerboseLogging)
+                Log.Information("Sent ({X:F2},{Y:F2},{Surface}) to proximity audio host.",
+                                position.x, position.y, position.surfaceIndex);
         }
         catch (Exception e)
         {
@@ -261,26 +207,26 @@ public sealed class PositionTransferClientService : IService
 
         try
         {
-            if (WebSocket != null)
-            {
-                if (WebSocket.IsRunning)
-                    await WebSocket.StopOrFail(WebSocketCloseStatus.NormalClosure, "Closing connection.");
+            ShuttingDown = true;
 
-                WebSocket.Dispose();
+            while (ENetThread is { IsAlive: true })
+                await Task.Delay(15, cancellationToken);
+
+            if (Client != null)
+            {
+                Client.PreventConnections(true);
+                _server?.Disconnect(0);
+                Client.Flush();
+                Client?.Dispose();
+                Client = null;
             }
 
+            ShuttingDown = false;
             Log.Information("Terminated proximity audio client.");
         }
         catch (Exception e)
         {
             Log.Error(e, "Error disconnecting from proximity audio host: {Message}", e.Message);
         }
-    }
-
-    public enum OpCode : byte
-    {
-        Pong     = 200,
-        Identify = 201,
-        Update   = 202
     }
 }

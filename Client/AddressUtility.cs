@@ -6,14 +6,17 @@ namespace Client
 {
     internal static class AddressUtility
     {
+        public static HashSet<ushort> GetActiveUdpPorts() =>
+            IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Select(x => (ushort)x.Port).ToHashSet();
+
         /// <summary>
         /// https://stackoverflow.com/questions/5879605/udp-port-open-check
         /// </summary>
         /// <returns><c>0</c> if no port is available.</returns>
-        public static int FindFirstAvailablePort(HashSet<int>? portsInUse, int start, int checkCount)
+        public static ushort FindFirstAvailablePort(HashSet<ushort>? portsInUse, int start, int checkCount)
         {
-            var portsToCheck = Enumerable.Range(start, checkCount).ToHashSet();
-            portsInUse ??= [.. IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Select(x => x.Port)];
+            var portsToCheck = Enumerable.Range(start, checkCount).Select(x => (ushort)x).ToHashSet();
+            portsInUse ??= GetActiveUdpPorts();
 
             portsToCheck.ExceptWith(portsInUse);
 
@@ -57,7 +60,7 @@ namespace Client
 
         public static bool AddUrlReservation(int port, string user = "")
         {
-            // User can be Everyone, but we're just going to set it to the currect user for now
+            // User can be Everyone, but we're just going to set it to the current user for now
             if (string.IsNullOrEmpty(user))
                 user = $"{Environment.UserDomainName}\\{Environment.UserName}";
 

@@ -6,14 +6,11 @@ public static class DiscordUtility
 {
     public const int MaxUidLength = 18;
 
-    public static string GetFixedLengthUid(string uid) => uid.PadLeft(18, ' ');
+    public static string GetFixedLengthUid(string discordId) =>
+        discordId.PadRight(MaxUidLength, '\0');
 
-    public static string GetUid(string fixedLengthUid)
-    {
-        if (fixedLengthUid[0] == ' ')
-            fixedLengthUid = fixedLengthUid.Substring(1, 17);
-        return fixedLengthUid;
-    }
+    public static string GetUid(string fixedLengthUid) =>
+        fixedLengthUid.TrimEnd('\0');
 
     public static Guid CreateCryptographicallySecureGuid()
     {

@@ -12,13 +12,13 @@
         <AssemblyVersion>0.0.0.1</AssemblyVersion>
         <FileVersion>0.0.0.1</FileVersion>
         <NeutralLanguage>en</NeutralLanguage>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="ENet-CSharp" Version="2.4.8" />
       <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
       <PackageReference Include="Serilog.Sinks.RichTextBox.WinForms.Colored" Version="2.1.0" />
-      <PackageReference Include="Websocket.Client" Version="5.1.2" />
-      <PackageReference Include="WebsocketsSimple.Server" Version="7.0.9" />
     </ItemGroup>
 
     <ItemGroup>

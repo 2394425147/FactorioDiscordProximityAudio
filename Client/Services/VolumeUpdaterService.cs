@@ -1,4 +1,5 @@
-﻿using Client.Models;
+﻿using System.Runtime.CompilerServices;
+using Client.Models;
 using Serilog;
 
 namespace Client.Services;
@@ -32,52 +33,50 @@ public sealed class VolumeUpdaterService : IService
         return Task.FromResult(true);
     }
 
-    private void OnClientUpdateReceived(string discordId, FactorioPosition position)
+    private void OnClientUpdateReceived(string discordId, ClientPosition position)
     {
-        if (Clients.TryGetValue(discordId, out var clientPosition))
-        {
-            clientPosition = new ClientPosition { DiscordId = discordId };
-            Clients.Add(discordId, clientPosition);
-        }
+        Clients[discordId] = position;
 
-        clientPosition!.Position = position;
-
-        if (FactorioFileWatcher?.LastPositionPacket == null)
+        if (FactorioFileWatcher is not { LastKnownPosition : not null })
             return;
 
-        var volume = CalculateVolume(FactorioFileWatcher.LastPositionPacket.Value, position);
+        var localPosition = FactorioFileWatcher.LastKnownPosition.Value;
+
+        var volume = CalculateVolume(localPosition, position);
         DiscordPipe?.SetUserVolume(discordId, volume);
     }
 
-    private void OnLocalPositionUpdated(FactorioPosition obj)
+    private void OnLocalPositionUpdated()
     {
-        foreach (var client in Clients.Values)
+        if (FactorioFileWatcher is not { LastKnownPosition: not null })
+            return;
+
+        var localPosition = FactorioFileWatcher.LastKnownPosition.Value;
+
+        foreach (var (discordId, position) in Clients)
         {
-            var volume = CalculateVolume(obj, client.Position);
-            DiscordPipe?.SetUserVolume(client.DiscordId, volume);
+            var volume = CalculateVolume(localPosition, position);
+            DiscordPipe?.SetUserVolume(discordId, volume);
         }
     }
 
-    public static float CalculateVolume(FactorioPosition localPosition, FactorioPosition position)
+    public static float CalculateVolume(ClientPosition @this, ClientPosition other)
     {
-        if (localPosition.surfaceIndex != position.surfaceIndex)
+        if (@this.surfaceIndex != other.surfaceIndex)
             return 0;
 
         const double falloffRadius = 100.0;
 
-        var leftEarDistance = Distance(localPosition.x, localPosition.y, position.x, position.y);
-        return Volume(leftEarDistance, falloffRadius);
-    }
+        var distance = Distance(@this.x, @this.y, other.x, other.y);
 
-    private static double Distance(double x1, double y1, double x2, double y2) =>
-        Math.Sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+        if (distance > falloffRadius)
+            return 0;
 
-    private static float Volume(double leftEarDistance, double falloffRadius)
-    {
-        if (leftEarDistance > falloffRadius)
-            return 0f;
+        return (float)(1 - distance / falloffRadius);
 
-        return (float)(1 - leftEarDistance / falloffRadius);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        double Distance(double x1, double y1, double x2, double y2) =>
+            Math.Sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
     }
 
     private void OnClientDisconnected(string discordId)
