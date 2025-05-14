@@ -48,7 +48,7 @@ public sealed class DiscordPipeService : IService
             DiscordPipe = new DiscordIPC(Program.GetConfig(DiscordOAuthClientIdField));
             await DiscordPipe.InitAsync();
 
-            string accessToken;
+            string? accessToken;
             try
             {
                 var codeResponse = await DiscordPipe.SendCommandAsync(

@@ -11,7 +11,7 @@
 
     internal class PastableTextBox : TextBox
     {
-        public event EventHandler<ClipboardEventArgs> Pasted;
+        public event EventHandler<ClipboardEventArgs>? Pasted;
 
         private const int WM_PASTE = 0x0302;
         protected override void WndProc(ref Message m)
